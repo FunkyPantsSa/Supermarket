@@ -1,0 +1,31 @@
+bin/
+obj/
+
+# Build outputs
+build/
+build_verify*/
+artifacts/
+publish/
+TestResults/
+
+# IDE / user files
+.vs/
+.vscode/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# Logs / temp
+*.log
+*.tmp
+*.cache
+
+# SQLite / local data
+db/
+*.db
+*.db-shm
+*.db-wal
+
+# Local runtime files
+receipt.txt
