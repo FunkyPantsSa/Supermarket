@@ -139,7 +139,7 @@ namespace Supermarket
             btnNavOrders.Location = new Point(18, 184);
             btnNavOrders.Size = new Size(154, 42);
             btnNavStats.Text = "统计页面";
-            btnNavStats.Location = new Point(18, 236);
+            btnNavStats.Location = new Point(18, 288); // 收银流水在236，统计页面在288
             btnNavStats.Size = new Size(154, 42);
 
             panelMain.Dock = DockStyle.Fill;

@@ -1,4 +1,6 @@
-﻿namespace Supermarket
+using Supermarket.Services;
+
+namespace Supermarket
 {
     internal static class Program
     {
@@ -6,7 +8,18 @@
         static void Main()
         {
             ApplicationConfiguration.Initialize();
-            Application.Run(new Form1());
+
+            var dbDir = Path.Combine(AppContext.BaseDirectory, "db");
+            var dbPath = Path.Combine(dbDir, "supermarket.db");
+
+            var authService = new AuthService(dbPath);
+            using var loginForm = new LoginForm(authService);
+            if (loginForm.ShowDialog() != DialogResult.OK)
+            {
+                return;
+            }
+
+            Application.Run(new Form1(loginForm.LoginUserName));
         }
     }
 }

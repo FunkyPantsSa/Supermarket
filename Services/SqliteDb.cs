@@ -21,7 +21,9 @@ CREATE TABLE IF NOT EXISTS Products (
     Supplier TEXT NOT NULL,
     Category TEXT NOT NULL,
     Price REAL NOT NULL,
-    StockCount INTEGER NOT NULL
+    StockCount INTEGER NOT NULL,
+    LowStockThreshold INTEGER NOT NULL DEFAULT 10,
+    IsDeleted INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS Cashiers (
     CashierId TEXT PRIMARY KEY,
@@ -31,30 +33,73 @@ CREATE TABLE IF NOT EXISTS Orders (
     OrderId TEXT PRIMARY KEY,
     CashierId TEXT NOT NULL,
     CashierName TEXT NOT NULL,
+    PayType TEXT NOT NULL DEFAULT '现金',
+    DiscountAmount REAL NOT NULL DEFAULT 0,
+    ReceivedAmount REAL NOT NULL DEFAULT 0,
+    ChangeAmount REAL NOT NULL DEFAULT 0,
+    Status TEXT NOT NULL DEFAULT 'Completed',
     CreatedAt TEXT NOT NULL,
     CreatedTimestamp INTEGER NOT NULL,
     TotalAmount REAL NOT NULL
 );
-CREATE TABLE IF NOT EXISTS OrderLines (
-    Id INTEGER PRIMARY KEY AUTOINCREMENT,
-    OrderId TEXT NOT NULL,
-    ProductId INTEGER NOT NULL,
+CREATE TABLE IF NOT EXISTS OrderItems (
+    ItemID INTEGER PRIMARY KEY AUTOINCREMENT,
+    OrderID TEXT NOT NULL,
+    ProductID INTEGER NOT NULL,
+    Quantity INTEGER NOT NULL,
+    UnitPriceAtTime REAL NOT NULL,
     ProductName TEXT NOT NULL,
     Supplier TEXT NOT NULL,
-    Category TEXT NOT NULL,
-    UnitPrice REAL NOT NULL,
-    Quantity INTEGER NOT NULL,
-    SubTotal REAL NOT NULL
+    Category TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS TransactionLogs (
+    LogID INTEGER PRIMARY KEY AUTOINCREMENT,
+    Type TEXT NOT NULL,
+    Amount REAL NOT NULL,
+    Detail TEXT NOT NULL,
+    Timestamp TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS Users (
+    UserName TEXT PRIMARY KEY,
+    PasswordHash TEXT NOT NULL,
+    UpdatedAt TEXT NOT NULL
 );");
 
-            var productCount = ScalarInt(dbPath, "SELECT COUNT(1) FROM Products");
+            EnsureColumn(dbPath, "Products", "LowStockThreshold", "INTEGER NOT NULL DEFAULT 10");
+            EnsureColumn(dbPath, "Products", "IsDeleted", "INTEGER NOT NULL DEFAULT 0");
+            EnsureColumn(dbPath, "Orders", "PayType", "TEXT NOT NULL DEFAULT '现金'");
+            EnsureColumn(dbPath, "Orders", "DiscountAmount", "REAL NOT NULL DEFAULT 0");
+            EnsureColumn(dbPath, "Orders", "ReceivedAmount", "REAL NOT NULL DEFAULT 0");
+            EnsureColumn(dbPath, "Orders", "ChangeAmount", "REAL NOT NULL DEFAULT 0");
+            EnsureColumn(dbPath, "Orders", "Status", "TEXT NOT NULL DEFAULT 'Completed'");
+
+            var hasOrderItems = ScalarInt(dbPath, "SELECT COUNT(1) FROM sqlite_master WHERE type='table' AND name='OrderItems'") > 0;
+            var hasOrderLines = ScalarInt(dbPath, "SELECT COUNT(1) FROM sqlite_master WHERE type='table' AND name='OrderLines'") > 0;
+            if (hasOrderItems && hasOrderLines)
+            {
+                var countItems = ScalarInt(dbPath, "SELECT COUNT(1) FROM OrderItems");
+                if (countItems == 0)
+                {
+                    ExecuteNonQuery(dbPath, @"
+INSERT INTO OrderItems (OrderID, ProductID, Quantity, UnitPriceAtTime, ProductName, Supplier, Category)
+SELECT OrderId, ProductId, Quantity, UnitPrice, ProductName, Supplier, Category FROM OrderLines;");
+                }
+            }
+
+            SeedDefaultData(dbPath);
+            NormalizeText(dbPath);
+        }
+
+        private static void SeedDefaultData(string dbPath)
+        {
+            var productCount = ScalarInt(dbPath, "SELECT COUNT(1) FROM Products WHERE IsDeleted = 0");
             if (productCount == 0)
             {
                 ExecuteNonQuery(dbPath, @"
-INSERT INTO Products (ID, Name, Supplier, Category, Price, StockCount) VALUES
-(1001, '可乐 330ml', '可口可乐华南', '饮料', 3.50, 120),
-(1002, '矿泉水 550ml', '农夫山泉', '饮料', 2.00, 200),
-(1003, '全麦面包', '好麦烘焙', '食品', 6.80, 80);");
+INSERT INTO Products (ID, Name, Supplier, Category, Price, StockCount, LowStockThreshold, IsDeleted) VALUES
+(1001, '可乐 330ml', '可口可乐华南', '饮料', 3.50, 120, 20, 0),
+(1002, '矿泉水 550ml', '农夫山泉', '饮料', 2.00, 200, 30, 0),
+(1003, '全麦面包', '好麦烘焙', '食品', 6.80, 80, 15, 0);");
             }
 
             var cashierCount = ScalarInt(dbPath, "SELECT COUNT(1) FROM Cashiers");
@@ -63,12 +108,44 @@ INSERT INTO Products (ID, Name, Supplier, Category, Price, StockCount) VALUES
                 ExecuteNonQuery(dbPath, @"
 INSERT INTO Cashiers (CashierId, CashierName) VALUES
 ('C001', '张明'),
-('C002', '李婷'),
+('C002', '李娟'),
 ('C003', '王磊'),
 ('C004', '赵雪');");
             }
 
-            NormalizeChineseText(dbPath);
+            var userCount = ScalarInt(dbPath, "SELECT COUNT(1) FROM Users");
+            if (userCount == 0)
+            {
+                var now = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+                var defaultHash = AuthService.HashPassword("admin", "123456");
+                ExecuteNonQuery(dbPath,
+                    $"INSERT INTO Users (UserName, PasswordHash, UpdatedAt) VALUES ('admin', '{defaultHash}', '{now}');");
+            }
+        }
+
+        private static void NormalizeText(string dbPath)
+        {
+            ExecuteNonQuery(dbPath, @"
+BEGIN;
+UPDATE Products SET Name='可乐 330ml', Supplier='可口可乐华南', Category='饮料' WHERE ID=1001;
+UPDATE Products SET Name='矿泉水 550ml', Supplier='农夫山泉', Category='饮料' WHERE ID=1002;
+UPDATE Products SET Name='全麦面包', Supplier='好麦烘焙', Category='食品' WHERE ID=1003;
+UPDATE Cashiers SET CashierName='张明' WHERE CashierId='C001';
+UPDATE Cashiers SET CashierName='李娟' WHERE CashierId='C002';
+UPDATE Cashiers SET CashierName='王磊' WHERE CashierId='C003';
+UPDATE Cashiers SET CashierName='赵雪' WHERE CashierId='C004';
+COMMIT;");
+        }
+
+        private static void EnsureColumn(string dbPath, string tableName, string columnName, string definition)
+        {
+            var cols = Query(dbPath, $"PRAGMA table_info({tableName});");
+            if (cols.Any(c => string.Equals(c["name"], columnName, StringComparison.OrdinalIgnoreCase)))
+            {
+                return;
+            }
+
+            ExecuteNonQuery(dbPath, $"ALTER TABLE {tableName} ADD COLUMN {columnName} {definition};");
         }
 
         public static void ExecuteNonQuery(string dbPath, string sql)
@@ -140,29 +217,6 @@ INSERT INTO Cashiers (CashierId, CashierName) VALUES
         public static string Escape(string value)
         {
             return value.Replace("'", "''");
-        }
-
-        private static void NormalizeChineseText(string dbPath)
-        {
-            ExecuteNonQuery(dbPath, @"
-BEGIN;
-UPDATE Products SET Name='可乐 330ml', Supplier='可口可乐华南', Category='饮料' WHERE ID=1001;
-UPDATE Products SET Name='矿泉水 550ml', Supplier='农夫山泉', Category='饮料' WHERE ID=1002;
-UPDATE Products SET Name='全麦面包', Supplier='好麦烘焙', Category='食品' WHERE ID=1003;
-
-UPDATE Cashiers SET CashierName='张明' WHERE CashierId='C001';
-UPDATE Cashiers SET CashierName='李婷' WHERE CashierId='C002';
-UPDATE Cashiers SET CashierName='王磊' WHERE CashierId='C003';
-UPDATE Cashiers SET CashierName='赵雪' WHERE CashierId='C004';
-
-UPDATE Orders
-SET CashierName = COALESCE((SELECT c.CashierName FROM Cashiers c WHERE c.CashierId = Orders.CashierId), CashierName);
-
-UPDATE OrderLines
-SET ProductName = COALESCE((SELECT p.Name FROM Products p WHERE p.ID = OrderLines.ProductId), ProductName),
-    Supplier = COALESCE((SELECT p.Supplier FROM Products p WHERE p.ID = OrderLines.ProductId), Supplier),
-    Category = COALESCE((SELECT p.Category FROM Products p WHERE p.ID = OrderLines.ProductId), Category);
-COMMIT;");
         }
 
         private static void ExecuteInternal(string dbPath, string sql)

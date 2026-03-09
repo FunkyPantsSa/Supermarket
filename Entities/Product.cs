@@ -8,5 +8,7 @@
         public string Category { get; set; } = "";
         public decimal Price { get; set; }
         public int StockCount { get; set; }
+        public int LowStockThreshold { get; set; } = 10;
+        public bool IsDeleted { get; set; }
     }
 }

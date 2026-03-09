@@ -3,6 +3,8 @@ using System.Drawing.Printing;
 using System.Text;
 using Supermarket.Entities;
 using Supermarket.Services;
+using Supermarket.BLL;
+using Supermarket.UI;
 
 namespace Supermarket
 {
@@ -11,6 +13,12 @@ namespace Supermarket
         private readonly InventoryService _inventoryService;
         private readonly OrderService _orderService;
         private readonly CashierService _cashierService;
+        private readonly ProductBLL _productBLL;
+        private readonly OrderBLL _orderBLL;
+        private readonly StatisticsBLL _statisticsBLL;
+        private readonly TransactionLogBLL _transactionLogBLL;
+        private TabPage _tabTransactionLogs = null!;
+        private TransactionLogPanel? _transactionLogPanel;
         private readonly BindingList<OrderItem> _cart = new();
         private readonly Random _random = new();
         private readonly PrintDocument _orderPrintDocument = new();
@@ -21,13 +29,26 @@ namespace Supermarket
         private readonly HashSet<string> _checkedOrderIds = new();
         private bool _isApplyingOrderChecks;
         private readonly CheckBox _chkOrderSelectAll = new();
+        private readonly DataGridView _dgvStatsSummary = new();
+        private readonly ComboBox _cmbPayType = new();
+        private readonly NumericUpDown _numDiscount = new();
+        private readonly NumericUpDown _numReceived = new();
+        private readonly Label _lblChangeAmount = new();
+        private readonly Button _btnVoidOrder = new();
+        private readonly Button _btnExportLogs = new();
         private readonly TabPage _tabGenerate = new("订单生成");
         private int _titleClickCount;
         private bool _generatePageUnlocked;
 
-        public Form1()
+        public Form1(string? loginUserName = null)
         {
             InitializeComponent();
+            KeyPreview = true;
+
+            if (!string.IsNullOrWhiteSpace(loginUserName))
+            {
+                Text = $"超市收银管理系统 - 当前用户: {loginUserName}";
+            }
 
             var dbDir = Path.Combine(AppContext.BaseDirectory, "db");
             var dbPath = Path.Combine(dbDir, "supermarket.db");
@@ -40,13 +61,22 @@ namespace Supermarket
             _cashierService = new CashierService(dbPath);
             _cashierService.Load();
 
+            // 初始化BLL层
+            _productBLL = new ProductBLL(dbPath);
+            _orderBLL = new OrderBLL(dbPath);
+            _statisticsBLL = new StatisticsBLL(dbPath);
+            _transactionLogBLL = new TransactionLogBLL(dbPath);
+
             InitCartGrid();
             InitProductGrid();
             InitOrderGrid();
             InitStatsGrid();
+            InitStatsSummaryGrid();
             InitCashierSelector();
+            InitCheckoutExtension();
             ConfigureAutoLayouts();
             SetupHiddenGeneratePage();
+            ApplyUniformButtonSize();
             WireEvents();
             ApplyNavStyles();
             _orderPrintDocument.PrintPage += OrderPrintDocument_PrintPage;
@@ -62,6 +92,10 @@ namespace Supermarket
             RefreshOrderGrid();
             RefreshStatsPage();
             UpdateTotalAmount();
+            
+            // 初始化收银流水TabPage
+            InitTransactionLogsTab();
+            
             ShowPage(tabCashier);
         }
 
@@ -70,6 +104,8 @@ namespace Supermarket
             btnAddToCart.Click += btnAddToCart_Click;
             btnCheckout.Click += btnCheckout_Click;
             btnClearCart.Click += btnClearCart_Click;
+            dgvCart.KeyDown += dgvCart_KeyDown;
+            KeyDown += Form1_KeyDown;
 
             btnNavCashier.Click += (s, e) => ShowPage(tabCashier);
             btnNavProducts.Click += (s, e) => ShowPage(tabProducts);
@@ -79,6 +115,24 @@ namespace Supermarket
                 ShowPage(tabStats);
                 RefreshStatsPage();
             };
+            
+            // 添加收银流水页面入口（放在订单管理下面）
+            var btnNavTransactionLogs = new Button
+            {
+                Text = "收银流水",
+                Location = new Point(18, 184 + 52), // 订单管理是184，加上52的间距 = 236
+                Size = new Size(154, 42) // 和其他按钮一样大小，样式在ApplyNavStyles中统一设置
+            };
+            btnNavTransactionLogs.Click += (s, e) =>
+            {
+                ShowPage(_tabTransactionLogs);
+                RefreshTransactionLogsPage();
+            };
+            panelNav.Controls.Add(btnNavTransactionLogs);
+            
+            // 调整统计页面按钮位置（放在收银流水下面）
+            btnNavStats.Location = new Point(18, 236 + 52); // 收银流水是236，加上52的间距 = 288
+            
             lblNavTitle.Click += lblNavTitle_Click;
 
             btnProductAdd.Click += btnProductAdd_Click;
@@ -99,6 +153,8 @@ namespace Supermarket
 
             btnOrderRefresh.Click += (s, e) => RefreshOrderGrid();
             btnOrderPrint.Click += btnOrderPrint_Click;
+            _btnVoidOrder.Click += btnVoidOrder_Click;
+            _btnExportLogs.Click += btnExportLogs_Click;
             btnOrderToday.Click += (s, e) => ApplyOrderQuickRange(DateTime.Today, DateTime.Now, "今日收入");
             btnOrderYesterday.Click += (s, e) =>
             {
@@ -150,6 +206,7 @@ namespace Supermarket
             ConfigureProductTopLayout();
             ConfigureOrderTopLayout();
             ConfigureStatsTopLayout();
+            ConfigureStatsBodyLayout();
             ConfigureFormVisuals();
         }
 
@@ -168,6 +225,7 @@ namespace Supermarket
         {
             panelProductTop.Controls.Clear();
             panelProductTop.Height = 120;
+            SetWideButton(btnProductClearFilter);
 
             var table = new TableLayoutPanel
             {
@@ -199,6 +257,7 @@ namespace Supermarket
         {
             panelOrderTop.Controls.Clear();
             panelOrderTop.Height = 168;
+            SetWideButton(btnOrderClearFilter);
 
             var table = new TableLayoutPanel
             {
@@ -213,7 +272,11 @@ namespace Supermarket
             table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
 
             var row1 = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false, AutoScroll = true };
-            row1.Controls.AddRange(new Control[] { lblOrderSummary, lblOrderIncome, btnOrderToday, btnOrderYesterday, btnOrderMonth, btnOrderPrint, btnOrderRefresh });
+            _btnVoidOrder.Text = "\u4F5C\u5E9F\u9000\u5355";
+            _btnExportLogs.Text = "\u5BFC\u51FA\u6D41\u6C34CSV";
+            SetWideButton(_btnVoidOrder);
+            SetWideButton(_btnExportLogs);
+            row1.Controls.AddRange(new Control[] { lblOrderSummary, lblOrderIncome, btnOrderToday, btnOrderYesterday, btnOrderMonth, btnOrderPrint, _btnVoidOrder, _btnExportLogs, btnOrderRefresh });
 
             var row2 = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false, AutoScroll = true };
             row2.Controls.AddRange(new Control[] { lblOrderIdFilter, txtOrderIdFilter, lblOrderCashierIdFilter, txtOrderCashierIdFilter, lblOrderCashierNameFilter, txtOrderCashierNameFilter });
@@ -258,6 +321,78 @@ namespace Supermarket
             panelStatsTop.Controls.Add(table);
         }
 
+        private void ConfigureStatsBodyLayout()
+        {
+            tabStats.Controls.Clear();
+
+            var table = new TableLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                ColumnCount = 1,
+                RowCount = 2
+            };
+            table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+            table.RowStyles.Add(new RowStyle(SizeType.Absolute, 120F));
+            table.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
+
+            panelStatsTop.Dock = DockStyle.Fill;
+            dgvStatsOrders.Dock = DockStyle.Fill;
+
+            table.Controls.Add(panelStatsTop, 0, 0);
+            table.Controls.Add(dgvStatsOrders, 0, 1);
+            tabStats.Controls.Add(table);
+        }
+        
+        private void InitTransactionLogsTab()
+        {
+            var dbDir = Path.Combine(AppContext.BaseDirectory, "db");
+            var dbPath = Path.Combine(dbDir, "supermarket.db");
+            
+            _tabTransactionLogs = new TabPage("收银流水");
+            _transactionLogPanel = new TransactionLogPanel(dbPath);
+            _transactionLogPanel.Dock = DockStyle.Fill;
+            _tabTransactionLogs.Controls.Add(_transactionLogPanel);
+            
+            tabMain.Controls.Add(_tabTransactionLogs);
+        }
+        
+        private void RefreshTransactionLogsPage()
+        {
+            _transactionLogPanel?.LoadData();
+        }
+
+        private static void SetWideButton(Button button)
+        {
+            button.AutoSize = true;
+            button.AutoSizeMode = AutoSizeMode.GrowAndShrink;
+            button.MinimumSize = new Size(118, 34);
+            button.Padding = new Padding(6, 2, 6, 2);
+        }
+
+        private void ApplyUniformButtonSize()
+        {
+            foreach (var button in EnumerateControls(this).OfType<Button>())
+            {
+                button.AutoSize = false;
+                button.MinimumSize = new Size(118, 34);
+                button.Padding = new Padding(6, 2, 6, 2);
+                if (button.Width < 118) button.Width = 118;
+                if (button.Height < 34) button.Height = 34;
+            }
+        }
+
+        private static IEnumerable<Control> EnumerateControls(Control root)
+        {
+            foreach (Control child in root.Controls)
+            {
+                yield return child;
+                foreach (var nested in EnumerateControls(child))
+                {
+                    yield return nested;
+                }
+            }
+        }
+
         private void SetupHiddenGeneratePage()
         {
             var host = new Panel { Dock = DockStyle.Top, Height = 120, Padding = new Padding(8) };
@@ -279,13 +414,19 @@ namespace Supermarket
 
         private void ApplyNavStyles()
         {
-            var navButtons = new[] { btnNavCashier, btnNavProducts, btnNavOrders, btnNavStats };
+            // 获取所有导航按钮（包括收银流水）
+            var navButtons = panelNav.Controls.OfType<Button>()
+                .Where(b => b.Text == "收银台" || b.Text == "商品管理" || b.Text == "订单管理" || 
+                           b.Text == "收银流水" || b.Text == "统计页面")
+                .ToList();
+            
             foreach (var btn in navButtons)
             {
                 btn.ForeColor = Color.White;
-                btn.BackColor = Color.FromArgb(57, 62, 70);
+                btn.BackColor = Color.FromArgb(57, 62, 70); // 统一的按钮背景色
                 btn.FlatStyle = FlatStyle.Flat;
                 btn.FlatAppearance.BorderSize = 0;
+                btn.FlatAppearance.MouseOverBackColor = Color.FromArgb(70, 75, 85); // 鼠标悬停时的颜色
             }
         }
 
@@ -302,6 +443,40 @@ namespace Supermarket
             cmbCashier.ValueMember = nameof(Cashier.CashierId);
             cmbCashier.DropDownWidth = 220;
             cmbCashier.SelectedIndex = 0;
+        }
+
+        private void InitCheckoutExtension()
+        {
+            var lblPayType = new Label { Text = "\u652F\u4ED8\u65B9\u5F0F", Left = 12, Top = 210, Width = 200 };
+            _cmbPayType.Left = 12;
+            _cmbPayType.Top = 232;
+            _cmbPayType.Width = 200;
+            _cmbPayType.DropDownStyle = ComboBoxStyle.DropDownList;
+            _cmbPayType.Items.AddRange(new object[] { "现金", "扫码" });
+            _cmbPayType.SelectedIndex = 0;
+
+            var lblDiscount = new Label { Text = "\u624B\u52A8\u6298\u6263", Left = 12, Top = 272, Width = 200 };
+            _numDiscount.Left = 12;
+            _numDiscount.Top = 294;
+            _numDiscount.Width = 200;
+            _numDiscount.DecimalPlaces = 2;
+            _numDiscount.Maximum = 999999;
+            _numDiscount.ValueChanged += (s, e) => UpdateTotalAmount();
+
+            var lblReceived = new Label { Text = "\u5B9E\u6536\u91D1\u989D", Left = 12, Top = 334, Width = 200 };
+            _numReceived.Left = 12;
+            _numReceived.Top = 356;
+            _numReceived.Width = 200;
+            _numReceived.DecimalPlaces = 2;
+            _numReceived.Maximum = 999999;
+            _numReceived.ValueChanged += (s, e) => UpdateTotalAmount();
+
+            _lblChangeAmount.Text = "\u627E\u96F6\uFF1A0.00";
+            _lblChangeAmount.Left = 12;
+            _lblChangeAmount.Top = 396;
+            _lblChangeAmount.Width = 200;
+
+            panelCashierRight.Controls.AddRange(new Control[] { lblPayType, _cmbPayType, lblDiscount, _numDiscount, lblReceived, _numReceived, _lblChangeAmount });
         }
 
         private void InitCartGrid()
@@ -340,21 +515,35 @@ namespace Supermarket
             dgvProducts.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "分类", DataPropertyName = "Category", Name = "colPCategory", Width = 110 });
             dgvProducts.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "价格", DataPropertyName = "Price", Name = "colPPrice", Width = 90 });
             dgvProducts.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "库存", DataPropertyName = "StockCount", Name = "colPStock", Width = 90 });
+            dgvProducts.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "预警阈值", DataPropertyName = "LowStockThreshold", Name = "colPLow", Width = 100 });
+
+            dgvProducts.RowPrePaint += (s, e) =>
+            {
+                if (e.RowIndex < 0 || e.RowIndex >= dgvProducts.Rows.Count) return;
+                if (dgvProducts.Rows[e.RowIndex].DataBoundItem is not Product p) return;
+                var low = p.StockCount <= p.LowStockThreshold;
+                dgvProducts.Rows[e.RowIndex].DefaultCellStyle.BackColor = low ? Color.MistyRose : Color.White;
+                dgvProducts.Rows[e.RowIndex].DefaultCellStyle.ForeColor = low ? Color.DarkRed : Color.Black;
+            };
         }
 
         private void InitOrderGrid()
         {
             dgvOrders.MultiSelect = true;
             dgvOrders.AutoGenerateColumns = false;
+            dgvOrders.ReadOnly = false;
+            dgvOrders.EditMode = DataGridViewEditMode.EditOnEnter;
             dgvOrders.Columns.Clear();
-            dgvOrders.Columns.Add(new DataGridViewCheckBoxColumn { HeaderText = "选", Name = "colPick", Width = 40 });
-            dgvOrders.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "订单号", DataPropertyName = "OrderId", Width = 180 });
-            dgvOrders.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "收银员ID", DataPropertyName = "CashierId", Width = 90 });
-            dgvOrders.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "收银员", DataPropertyName = "CashierName", Width = 100 });
-            dgvOrders.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "时间", DataPropertyName = "CreatedAt", Width = 145 });
-            dgvOrders.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "时间戳", DataPropertyName = "CreatedTimestamp", Width = 120 });
-            dgvOrders.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "商品数", Name = "colItemCount", Width = 70 });
-            dgvOrders.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "总金额", DataPropertyName = "TotalAmount", Width = 100 });
+            dgvOrders.Columns.Add(new DataGridViewCheckBoxColumn { HeaderText = "选", Name = "colPick", Width = 40, ReadOnly = false, SortMode = DataGridViewColumnSortMode.NotSortable });
+            dgvOrders.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "订单号", DataPropertyName = "OrderId", Width = 180, ReadOnly = true });
+            dgvOrders.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "收银员ID", DataPropertyName = "CashierId", Width = 90, ReadOnly = true });
+            dgvOrders.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "收银员", DataPropertyName = "CashierName", Width = 100, ReadOnly = true });
+            dgvOrders.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "支付方式", DataPropertyName = "PayType", Width = 90, ReadOnly = true });
+            dgvOrders.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "状态", DataPropertyName = "Status", Width = 90, ReadOnly = true });
+            dgvOrders.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "时间", DataPropertyName = "CreatedAt", Width = 145, ReadOnly = true });
+            dgvOrders.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "时间戳", DataPropertyName = "CreatedTimestamp", Width = 120, ReadOnly = true });
+            dgvOrders.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "商品数", Name = "colItemCount", Width = 70, ReadOnly = true });
+            dgvOrders.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "总金额", DataPropertyName = "TotalAmount", Width = 100, ReadOnly = true });
 
             dgvOrders.CellFormatting += (s, e) =>
             {
@@ -384,6 +573,12 @@ namespace Supermarket
             dgvOrders.CurrentCellDirtyStateChanged += (s, e) =>
             {
                 if (dgvOrders.IsCurrentCellDirty) dgvOrders.CommitEdit(DataGridViewDataErrorContexts.Commit);
+            };
+            dgvOrders.CellContentClick += (s, e) =>
+            {
+                if (e.RowIndex < 0) return;
+                if (dgvOrders.Columns[e.ColumnIndex].Name != "colPick") return;
+                dgvOrders.CommitEdit(DataGridViewDataErrorContexts.Commit);
             };
             dgvOrders.CellValueChanged += dgvOrders_CellValueChanged;
 
@@ -441,10 +636,40 @@ namespace Supermarket
             };
         }
 
-        private void RefreshProductGrid()
+        private sealed class StatsSummaryRow
         {
-            dgvProducts.DataSource = null;
-            dgvProducts.DataSource = _inventoryService.Products.OrderBy(p => p.ID).ToList();
+            public string Metric { get; set; } = "";
+            public string Value { get; set; } = "";
+            public string Detail { get; set; } = "";
+        }
+
+        private void InitStatsSummaryGrid()
+        {
+            _dgvStatsSummary.AutoGenerateColumns = false;
+            _dgvStatsSummary.AllowUserToAddRows = false;
+            _dgvStatsSummary.AllowUserToDeleteRows = false;
+            _dgvStatsSummary.ReadOnly = true;
+            _dgvStatsSummary.RowHeadersVisible = false;
+            _dgvStatsSummary.SelectionMode = DataGridViewSelectionMode.FullRowSelect;
+            _dgvStatsSummary.Columns.Clear();
+            _dgvStatsSummary.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "汇总指标", DataPropertyName = "Metric", Width = 180 });
+            _dgvStatsSummary.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "统计值", DataPropertyName = "Value", Width = 180 });
+            _dgvStatsSummary.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "说明", DataPropertyName = "Detail", AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill });
+        }
+
+        private async void RefreshProductGrid()
+        {
+            try
+            {
+                var products = await Task.Run(() => 
+                    _inventoryService.Products.OrderBy(p => p.ID).ToList());
+                dgvProducts.DataSource = null;
+                dgvProducts.DataSource = products;
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"刷新商品列表失败：{ex.Message}", "错误", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
         }
 
         private void btnProductFilterCategory_Click(object? sender, EventArgs e)
@@ -504,7 +729,8 @@ namespace Supermarket
 
             if (!string.IsNullOrWhiteSpace(supplier))
             {
-                query = query.Where(p => p.Supplier.Contains(supplier, StringComparison.OrdinalIgnoreCase));
+                query = query.Where(p => p.Supplier.Contains(supplier, StringComparison.OrdinalIgnoreCase)
+                                         || p.Name.Contains(supplier, StringComparison.OrdinalIgnoreCase));
             }
 
             dgvProducts.DataSource = null;
@@ -564,10 +790,14 @@ namespace Supermarket
                 if (!ShowStockDialog(selected.StockCount, out var stock)) return;
                 selected.StockCount = stock;
             }
-            else
+            else if (prop == "Price")
             {
                 if (!ShowPriceDialog(selected.Price, out var price)) return;
                 selected.Price = price;
+            }
+            else
+            {
+                return;
             }
 
             _inventoryService.Save();
@@ -576,9 +806,18 @@ namespace Supermarket
             UpdateTotalAmount();
         }
 
-        private void RefreshOrderGrid()
+        private async void RefreshOrderGrid()
         {
-            ApplyOrderView(_orderService.Orders.OrderByDescending(o => o.CreatedAt).ToList(), "全部订单");
+            try
+            {
+                var orders = await Task.Run(() => 
+                    _orderService.Orders.OrderByDescending(o => o.CreatedAt).ToList());
+                ApplyOrderView(orders, "全部订单");
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"刷新订单列表失败：{ex.Message}", "错误", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
         }
 
         private void ApplyOrderView(List<OrderRecord> orders, string title)
@@ -693,6 +932,42 @@ namespace Supermarket
 
             var total = filtered.Sum(o => o.TotalAmount);
             lblFilterSummary.Text = $"筛选结果：{filtered.Count} 单，合计 {total:F2}";
+            RefreshAllOrdersSummary(filtered, start, end);
+        }
+
+        private void RefreshAllOrdersSummary(List<OrderRecord> filteredOrders, DateTime start, DateTime end)
+        {
+            var totalCount = filteredOrders.Count;
+            var totalAmount = filteredOrders.Sum(o => o.TotalAmount);
+            var avgAmount = totalCount == 0 ? 0m : totalAmount / totalCount;
+            var timeRange = $"{start:yyyy-MM-dd HH:mm} - {end:yyyy-MM-dd HH:mm}";
+
+            var rows = new List<StatsSummaryRow>
+            {
+                new() { Metric = "筛选订单总数", Value = $"{totalCount}", Detail = timeRange },
+                new() { Metric = "筛选订单总金额", Value = $"{totalAmount:F2}", Detail = timeRange },
+                new() { Metric = "筛选客单价", Value = $"{avgAmount:F2}", Detail = "筛选总金额 / 筛选总订单数" }
+            };
+
+            var cashierGroups = filteredOrders
+                .GroupBy(o => new { o.CashierId, o.CashierName })
+                .OrderByDescending(g => g.Sum(x => x.TotalAmount))
+                .ThenBy(g => g.Key.CashierId)
+                .ToList();
+
+            foreach (var g in cashierGroups)
+            {
+                var amount = g.Sum(x => x.TotalAmount);
+                rows.Add(new StatsSummaryRow
+                {
+                    Metric = $"营业员 {g.Key.CashierName}({g.Key.CashierId})",
+                    Value = $"{amount:F2}",
+                    Detail = $"{g.Count()} 单"
+                });
+            }
+
+            _dgvStatsSummary.DataSource = null;
+            _dgvStatsSummary.DataSource = rows;
         }
 
         private void btnGenerateOrders_Click(object? sender, EventArgs e)
@@ -948,6 +1223,46 @@ namespace Supermarket
             dgvOrderItems.DataSource = order.Items.ToList();
         }
 
+        private void btnVoidOrder_Click(object? sender, EventArgs e)
+        {
+            if (dgvOrders.CurrentRow?.DataBoundItem is not OrderRecord order)
+            {
+                MessageBox.Show("\u8BF7\u5148\u9009\u62E9\u4E00\u6761\u8BA2\u5355\u3002", "\u63D0\u793A", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            var confirm = MessageBox.Show($"\u786E\u8BA4\u4F5C\u5E9F\u8BA2\u5355 {order.OrderId} \uFF1F", "\u786E\u8BA4", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+            if (confirm != DialogResult.Yes) return;
+
+            // 使用新的BLL层处理退单
+            if (_orderBLL.VoidOrder(order.OrderId, "手工作废", out var message))
+            {
+                _inventoryService.Load();
+                RefreshProductGrid();
+                RefreshOrderGrid();
+                RefreshStatsPage();
+                ToastHelper.ShowToast(this, message, 3000);
+            }
+            else
+            {
+                MessageBox.Show(message, "失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+        }
+
+        private void btnExportLogs_Click(object? sender, EventArgs e)
+        {
+            using var dialog = new SaveFileDialog
+            {
+                Filter = "CSV files (*.csv)|*.csv",
+                FileName = $"transaction_logs_{DateTime.Now:yyyyMMdd_HHmmss}.csv"
+            };
+
+            if (dialog.ShowDialog(this) != DialogResult.OK) return;
+
+            _orderService.ExportLogsToCsv(dialog.FileName);
+            MessageBox.Show("\u6D41\u6C34\u5DF2\u5BFC\u51FA\u3002", "\u5B8C\u6210", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+
         private void btnOrderPrint_Click(object? sender, EventArgs e)
         {
             var selectedOrders = dgvOrders.Rows
@@ -1107,8 +1422,7 @@ namespace Supermarket
             var ok = MessageBox.Show($"确认删除商品 {selected.Name} ?", "确认", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
             if (ok != DialogResult.Yes) return;
 
-            _inventoryService.Products.Remove(selected);
-            _inventoryService.Save();
+            _inventoryService.LogicalDelete(selected.ID);
             RefreshProductGrid();
         }
 
@@ -1131,7 +1445,7 @@ namespace Supermarket
             dialog.FormBorderStyle = FormBorderStyle.FixedDialog;
             dialog.MaximizeBox = false;
             dialog.MinimizeBox = false;
-            dialog.ClientSize = new Size(360, 320);
+            dialog.ClientSize = new Size(360, 362);
 
             var lblId = new Label { Text = "商品ID", Left = 20, Top = 22, Width = 80 };
             var txtId = new TextBox { Left = 110, Top = 18, Width = 200 };
@@ -1151,13 +1465,16 @@ namespace Supermarket
             var lblStock = new Label { Text = "库存", Left = 20, Top = 232, Width = 80 };
             var txtStock = new TextBox { Left = 110, Top = 228, Width = 200 };
 
-            var btnOk = new Button { Text = "确定", Left = 154, Top = 272, Width = 75, DialogResult = DialogResult.OK };
-            var btnCancel = new Button { Text = "取消", Left = 235, Top = 272, Width = 75, DialogResult = DialogResult.Cancel };
+            var lblLow = new Label { Text = "库存预警值", Left = 20, Top = 274, Width = 80 };
+            var txtLow = new TextBox { Left = 110, Top = 270, Width = 200, Text = "10" };
+
+            var btnOk = new Button { Text = "确定", Left = 154, Top = 314, Width = 75, DialogResult = DialogResult.OK };
+            var btnCancel = new Button { Text = "取消", Left = 235, Top = 314, Width = 75, DialogResult = DialogResult.Cancel };
 
             dialog.Controls.AddRange(new Control[]
             {
                 lblId, txtId, lblName, txtName, lblSupplier, txtSupplier, lblCategory, txtCategory,
-                lblPrice, txtPrice, lblStock, txtStock, btnOk, btnCancel
+                lblPrice, txtPrice, lblStock, txtStock, lblLow, txtLow, btnOk, btnCancel
             });
             dialog.AcceptButton = btnOk;
             dialog.CancelButton = btnCancel;
@@ -1203,6 +1520,12 @@ namespace Supermarket
                 return null;
             }
 
+            if (!int.TryParse(txtLow.Text.Trim(), out int lowStock) || lowStock < 0)
+            {
+                MessageBox.Show("库存预警值格式错误。", "输入错误", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return null;
+            }
+
             return new Product
             {
                 ID = id,
@@ -1210,7 +1533,8 @@ namespace Supermarket
                 Supplier = supplier,
                 Category = category,
                 Price = price,
-                StockCount = stock
+                StockCount = stock,
+                LowStockThreshold = lowStock
             };
         }
 
@@ -1252,21 +1576,21 @@ namespace Supermarket
             {
                 if (!int.TryParse(txtProductId.Text.Trim(), out int productId))
                 {
-                    MessageBox.Show("商品ID必须是数字。", "输入错误", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    ToastHelper.ShowToast(this, "商品ID必须是数字");
                     return;
                 }
 
                 int quantity = (int)numQuantity.Value;
                 if (quantity <= 0)
                 {
-                    MessageBox.Show("数量必须大于0。", "输入错误", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    ToastHelper.ShowToast(this, "数量必须大于0");
                     return;
                 }
 
-                var product = _inventoryService.FindById(productId);
+                var product = _productBLL.GetProductById(productId);
                 if (product == null)
                 {
-                    MessageBox.Show("商品ID不存在。", "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    ToastHelper.ShowToast(this, "商品ID不存在");
                     return;
                 }
 
@@ -1274,7 +1598,7 @@ namespace Supermarket
                 int alreadyInCart = existing?.Quantity ?? 0;
                 if (product.StockCount < alreadyInCart + quantity)
                 {
-                    MessageBox.Show("库存不足。", "库存警告", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    ToastHelper.ShowToast(this, $"库存不足，当前库存：{product.StockCount}");
                     return;
                 }
 
@@ -1302,41 +1626,125 @@ namespace Supermarket
             UpdateTotalAmount();
         }
 
-        private void btnCheckout_Click(object? sender, EventArgs e)
+        private void Form1_KeyDown(object? sender, KeyEventArgs e)
+        {
+            if (tabMain.SelectedTab != tabCashier) return;
+            if (!dgvCart.Focused && !dgvCart.ContainsFocus) return;
+            HandleCartHotKey(e);
+        }
+
+        private void dgvCart_KeyDown(object? sender, KeyEventArgs e)
+        {
+            HandleCartHotKey(e);
+        }
+
+        private void HandleCartHotKey(KeyEventArgs e)
+        {
+            if (dgvCart.CurrentRow?.Index is not int rowIndex || rowIndex < 0 || rowIndex >= _cart.Count)
+            {
+                return;
+            }
+
+            var item = _cart[rowIndex];
+            if (e.KeyCode == Keys.Add || e.KeyCode == Keys.Oemplus)
+            {
+                if (item.Quantity < item.Product.StockCount)
+                {
+                    item.Quantity++;
+                    dgvCart.Refresh();
+                    UpdateTotalAmount();
+                }
+                e.Handled = true;
+            }
+            else if (e.KeyCode == Keys.Subtract || e.KeyCode == Keys.OemMinus)
+            {
+                if (item.Quantity > 1)
+                {
+                    item.Quantity--;
+                    dgvCart.Refresh();
+                    UpdateTotalAmount();
+                }
+                e.Handled = true;
+            }
+            else if (e.KeyCode == Keys.Delete)
+            {
+                _cart.RemoveAt(rowIndex);
+                dgvCart.Refresh();
+                UpdateTotalAmount();
+                e.Handled = true;
+            }
+        }
+
+        private async void btnCheckout_Click(object? sender, EventArgs e)
         {
             if (_cart.Count == 0)
             {
-                MessageBox.Show("购物车为空。", "提示", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                ToastHelper.ShowToast(this, "购物车为空");
                 return;
             }
 
             try
             {
-                foreach (var item in _cart)
+                btnCheckout.Enabled = false;
+                btnCheckout.Text = "结算中...";
+
+                // 异步检查库存
+                await Task.Run(() =>
                 {
-                    var p = _inventoryService.FindById(item.Product.ID);
-                    if (p == null || p.StockCount < item.Quantity)
+                    foreach (var item in _cart)
                     {
-                        MessageBox.Show($"商品 {item.Product.Name} 库存不足，无法结算。", "库存警告", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                        return;
+                        var p = _inventoryService.FindById(item.Product.ID);
+                        if (p == null || p.StockCount < item.Quantity)
+                        {
+                            throw new InvalidOperationException($"商品 {item.Product.Name} 库存不足，无法结算。");
+                        }
                     }
+                });
+
+                var raw = _cart.Sum(i => i.SubTotal);
+                var discount = _numDiscount.Value;
+                var actual = Math.Max(0, raw - discount);
+                if (_cmbPayType.SelectedItem?.ToString() == "现金" && _numReceived.Value < actual)
+                {
+                    MessageBox.Show("实收金额不能小于应收。", "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    btnCheckout.Enabled = true;
+                    btnCheckout.Text = "结算";
+                    return;
                 }
 
                 var cashier = cmbCashier.SelectedItem as Cashier ?? _cashierService.GetRandom(_random);
                 var order = BuildOrderRecord(_cart.ToList(), cashier);
-
-                foreach (var item in _cart)
+                
+                // 异步处理订单（使用事务）
+                string? errorMessage = null;
+                var success = await Task.Run(() =>
                 {
-                    var p = _inventoryService.FindById(item.Product.ID)!;
-                    p.StockCount -= item.Quantity;
+                    return _orderBLL.PlaceOrder(order, out errorMessage);
+                });
+
+                if (!success)
+                {
+                    MessageBox.Show($"结算失败：{errorMessage}", "错误", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    btnCheckout.Enabled = true;
+                    btnCheckout.Text = "结算";
+                    return;
                 }
 
-                _inventoryService.Save();
-                _orderService.Append(order);
-                GenerateReceipt(order);
+                // 异步生成小票
+                await Task.Run(() => GenerateReceipt(order));
 
-                MessageBox.Show("结算成功，已生成小票 receipt.txt\n并写入 SQLite 数据库", "成功", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                ToastHelper.ShowToast(this, "结算成功！", 3000);
                 _cart.Clear();
+                _numDiscount.Value = 0;
+                _numReceived.Value = 0;
+                
+                // 异步刷新数据
+                await Task.Run(() =>
+                {
+                    _inventoryService.Load();
+                    _orderService.Load();
+                });
+
                 UpdateTotalAmount();
                 RefreshProductGrid();
                 RefreshOrderGrid();
@@ -1346,19 +1754,35 @@ namespace Supermarket
             {
                 MessageBox.Show($"结算失败：{ex.Message}", "错误", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
+            finally
+            {
+                btnCheckout.Enabled = true;
+                btnCheckout.Text = "结算";
+            }
         }
 
         private OrderRecord BuildOrderRecord(List<OrderItem> items, Cashier cashier)
         {
             var now = DateTime.Now;
+            var raw = items.Sum(i => i.SubTotal);
+            var discount = _numDiscount.Value;
+            var actual = Math.Max(0, raw - discount);
+            var payType = _cmbPayType.SelectedItem?.ToString() ?? "现金";
+            var received = payType == "现金" ? _numReceived.Value : actual;
+            var change = Math.Max(0, received - actual);
             return new OrderRecord
             {
-                OrderId = $"ORD-{now:yyyyMMddHHmmssfff}",
+                OrderId = Guid.NewGuid().ToString("N").ToUpperInvariant(),
                 CashierId = cashier.CashierId,
                 CashierName = cashier.CashierName,
+                PayType = payType,
+                DiscountAmount = discount,
+                ReceivedAmount = received,
+                ChangeAmount = change,
                 CreatedAt = now,
                 CreatedTimestamp = new DateTimeOffset(now).ToUnixTimeMilliseconds(),
-                TotalAmount = items.Sum(i => i.SubTotal),
+                TotalAmount = actual,
+                Status = "Completed",
                 Items = items.Select(i => new OrderLine
                 {
                     ProductId = i.Product.ID,
@@ -1374,8 +1798,12 @@ namespace Supermarket
 
         private void UpdateTotalAmount()
         {
-            decimal total = _cart.Sum(x => x.SubTotal);
-            lblTotalAmount.Text = $"总金额：{total:C2}";
+            var raw = _cart.Sum(x => x.SubTotal);
+            var discount = _numDiscount.Value;
+            var actual = Math.Max(0, raw - discount);
+            lblTotalAmount.Text = $"总金额：{actual:C2}";
+            var change = Math.Max(0, _numReceived.Value - actual);
+            _lblChangeAmount.Text = $"找零：{change:F2}";
         }
 
         private void GenerateReceipt(OrderRecord order)
@@ -1384,6 +1812,7 @@ namespace Supermarket
             sb.AppendLine("==== 超市小票 ====");
             sb.AppendLine($"订单号：{order.OrderId}");
             sb.AppendLine($"收银员：{order.CashierName} ({order.CashierId})");
+            sb.AppendLine($"支付方式：{order.PayType}");
             sb.AppendLine($"时间：{order.CreatedAt:yyyy-MM-dd HH:mm:ss}");
             sb.AppendLine($"时间戳：{order.CreatedTimestamp}");
             sb.AppendLine("------------------");
@@ -1394,6 +1823,9 @@ namespace Supermarket
             }
 
             sb.AppendLine("------------------");
+            sb.AppendLine($"折扣：{order.DiscountAmount:F2}");
+            sb.AppendLine($"实收：{order.ReceivedAmount:F2}");
+            sb.AppendLine($"找零：{order.ChangeAmount:F2}");
             sb.AppendLine($"总金额：{order.TotalAmount:F2}");
             sb.AppendLine("谢谢惠顾！");
 

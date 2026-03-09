@@ -19,7 +19,7 @@ namespace Supermarket.Services
             SqliteDb.EnsureCreated(_dbPath);
             Products = new List<Product>();
 
-            var rows = SqliteDb.Query(_dbPath, "SELECT ID, Name, Supplier, Category, Price, StockCount FROM Products ORDER BY ID");
+            var rows = SqliteDb.Query(_dbPath, "SELECT ID, Name, Supplier, Category, Price, StockCount, LowStockThreshold, IsDeleted FROM Products WHERE IsDeleted = 0 ORDER BY ID");
             foreach (var row in rows)
             {
                 Products.Add(new Product
@@ -29,7 +29,9 @@ namespace Supermarket.Services
                     Supplier = row["Supplier"] ?? "",
                     Category = row["Category"] ?? "",
                     Price = decimal.Parse(row["Price"] ?? "0", CultureInfo.InvariantCulture),
-                    StockCount = int.TryParse(row["StockCount"], out var stock) ? stock : 0
+                    StockCount = int.TryParse(row["StockCount"], out var stock) ? stock : 0,
+                    LowStockThreshold = int.TryParse(row["LowStockThreshold"], out var low) ? low : 10,
+                    IsDeleted = (row["IsDeleted"] ?? "0") == "1"
                 });
             }
         }
@@ -45,7 +47,7 @@ namespace Supermarket.Services
             foreach (var p in Products)
             {
                 sb.AppendLine(
-                    $"INSERT INTO Products (ID, Name, Supplier, Category, Price, StockCount) VALUES ({p.ID}, '{SqliteDb.Escape(p.Name)}', '{SqliteDb.Escape(p.Supplier)}', '{SqliteDb.Escape(p.Category)}', {p.Price.ToString(CultureInfo.InvariantCulture)}, {p.StockCount});");
+                    $"INSERT INTO Products (ID, Name, Supplier, Category, Price, StockCount, LowStockThreshold, IsDeleted) VALUES ({p.ID}, '{SqliteDb.Escape(p.Name)}', '{SqliteDb.Escape(p.Supplier)}', '{SqliteDb.Escape(p.Category)}', {p.Price.ToString(CultureInfo.InvariantCulture)}, {p.StockCount}, {Math.Max(0, p.LowStockThreshold)}, {(p.IsDeleted ? 1 : 0)});");
             }
 
             sb.AppendLine("COMMIT;");
@@ -55,6 +57,15 @@ namespace Supermarket.Services
         public Product? FindById(int id)
         {
             return Products.FirstOrDefault(p => p.ID == id);
+        }
+
+        public void LogicalDelete(int id)
+        {
+            var target = Products.FirstOrDefault(p => p.ID == id);
+            if (target == null) return;
+            target.IsDeleted = true;
+            Products = Products.Where(p => !p.IsDeleted).ToList();
+            Save();
         }
     }
 }
