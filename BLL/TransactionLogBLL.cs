@@ -3,9 +3,6 @@ using Supermarket.Entities;
 
 namespace Supermarket.BLL
 {
-    /// <summary>
-    /// 交易流水业务逻辑层
-    /// </summary>
     public class TransactionLogBLL
     {
         private readonly TransactionLogDAL _logDAL;
@@ -25,20 +22,17 @@ namespace Supermarket.BLL
             _logDAL.InsertLog(type, amount, detail);
         }
 
-        /// <summary>
-        /// 获取当日汇总信息
-        /// </summary>
         public (decimal totalRevenue, int orderCount, decimal avgOrderAmount) GetTodaySummary()
         {
             var today = DateTime.Today;
             var tomorrow = today.AddDays(1);
             var logs = _logDAL.GetLogs(today, tomorrow);
-            
-            var salesLogs = logs.Where(l => l.Type == "销售").ToList();
+
+            var salesLogs = logs.Where(l => l.Type == "\u9500\u552E").ToList();
             var totalRevenue = salesLogs.Sum(l => l.Amount);
             var orderCount = salesLogs.Count;
             var avgOrderAmount = orderCount > 0 ? totalRevenue / orderCount : 0m;
-            
+
             return (totalRevenue, orderCount, avgOrderAmount);
         }
     }

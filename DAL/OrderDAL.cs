@@ -4,9 +4,6 @@ using Supermarket.Entities;
 
 namespace Supermarket.DAL
 {
-    /// <summary>
-    /// 订单数据访问层
-    /// </summary>
     public class OrderDAL
     {
         private readonly string _dbPath;
@@ -20,8 +17,8 @@ namespace Supermarket.DAL
         {
             Services.SqliteDb.EnsureCreated(_dbPath);
             var orders = new List<OrderRecord>();
-
             var dict = new Dictionary<string, OrderRecord>(StringComparer.OrdinalIgnoreCase);
+
             var orderRows = Services.SqliteDb.Query(_dbPath, @"
 SELECT OrderId, CashierId, CashierName, PayType, DiscountAmount, ReceivedAmount, ChangeAmount, Status, CreatedAt, CreatedTimestamp, TotalAmount
 FROM Orders
@@ -45,7 +42,6 @@ ORDER BY CreatedAt DESC");
                     TotalAmount = decimal.Parse(row["TotalAmount"] ?? "0", CultureInfo.InvariantCulture),
                     Items = new List<OrderLine>()
                 };
-
                 dict[order.OrderId] = order;
                 orders.Add(order);
             }
@@ -80,30 +76,15 @@ ORDER BY ItemID");
             return orders;
         }
 
-        public void SaveOrder(OrderRecord order)
-        {
-            Services.SqliteDb.EnsureCreated(_dbPath);
-            var sb = new StringBuilder();
-            sb.AppendLine("BEGIN;");
-            AppendOrderSql(sb, order);
-            sb.AppendLine("COMMIT;");
-            Services.SqliteDb.ExecuteNonQuery(_dbPath, sb.ToString());
-        }
-
-        public void UpdateOrderStatus(string orderId, string status)
-        {
-            var safeOrderId = Services.SqliteDb.Escape(orderId);
-            Services.SqliteDb.ExecuteNonQuery(_dbPath, 
-                $"UPDATE Orders SET Status = '{Services.SqliteDb.Escape(status)}' WHERE OrderId = '{safeOrderId}';");
-        }
-
         public OrderRecord? GetOrderById(string orderId)
         {
             var safeOrderId = Services.SqliteDb.Escape(orderId);
-            var rows = Services.SqliteDb.Query(_dbPath, 
+            var rows = Services.SqliteDb.Query(_dbPath,
                 $"SELECT OrderId, CashierId, CashierName, PayType, DiscountAmount, ReceivedAmount, ChangeAmount, Status, CreatedAt, CreatedTimestamp, TotalAmount FROM Orders WHERE OrderId = '{safeOrderId}' LIMIT 1");
-            
-            if (rows.Count == 0) return null;
+            if (rows.Count == 0)
+            {
+                return null;
+            }
 
             var row = rows[0];
             var createdAt = DateTime.TryParse(row["CreatedAt"], out var dt) ? dt : DateTime.Now;
@@ -123,9 +104,8 @@ ORDER BY ItemID");
                 Items = new List<OrderLine>()
             };
 
-            var itemRows = Services.SqliteDb.Query(_dbPath, 
+            var itemRows = Services.SqliteDb.Query(_dbPath,
                 $"SELECT ProductID, ProductName, Supplier, Category, UnitPriceAtTime, Quantity FROM OrderItems WHERE OrderID = '{safeOrderId}'");
-            
             foreach (var itemRow in itemRows)
             {
                 var unitPrice = decimal.Parse(itemRow["UnitPriceAtTime"] ?? "0", CultureInfo.InvariantCulture);
@@ -145,21 +125,38 @@ ORDER BY ItemID");
             return order;
         }
 
+        public void SaveOrder(OrderRecord order)
+        {
+            Services.SqliteDb.EnsureCreated(_dbPath);
+            var sb = new StringBuilder();
+            sb.AppendLine("BEGIN;");
+            AppendOrderSql(sb, order);
+            sb.AppendLine("COMMIT;");
+            Services.SqliteDb.ExecuteNonQuery(_dbPath, sb.ToString());
+        }
+
+        public void UpdateOrderStatus(string orderId, string status)
+        {
+            var safeOrderId = Services.SqliteDb.Escape(orderId);
+            Services.SqliteDb.ExecuteNonQuery(_dbPath,
+                $"UPDATE Orders SET Status = '{Services.SqliteDb.Escape(status)}' WHERE OrderId = '{safeOrderId}';");
+        }
+
         private static void AppendOrderSql(StringBuilder sb, OrderRecord order)
         {
             sb.AppendLine($@"
 INSERT OR REPLACE INTO Orders (OrderId, CashierId, CashierName, PayType, DiscountAmount, ReceivedAmount, ChangeAmount, Status, CreatedAt, CreatedTimestamp, TotalAmount)
-VALUES ('{Services.SqliteDb.Escape(order.OrderId)}', '{Services.SqliteDb.Escape(order.CashierId)}', '{Services.SqliteDb.Escape(order.CashierName)}', 
-        '{Services.SqliteDb.Escape(order.PayType)}', {order.DiscountAmount.ToString(CultureInfo.InvariantCulture)}, 
-        {order.ReceivedAmount.ToString(CultureInfo.InvariantCulture)}, {order.ChangeAmount.ToString(CultureInfo.InvariantCulture)}, 
-        '{Services.SqliteDb.Escape(order.Status)}', '{order.CreatedAt:yyyy-MM-dd HH:mm:ss}', {order.CreatedTimestamp}, 
+VALUES ('{Services.SqliteDb.Escape(order.OrderId)}', '{Services.SqliteDb.Escape(order.CashierId)}', '{Services.SqliteDb.Escape(order.CashierName)}',
+        '{Services.SqliteDb.Escape(order.PayType)}', {order.DiscountAmount.ToString(CultureInfo.InvariantCulture)},
+        {order.ReceivedAmount.ToString(CultureInfo.InvariantCulture)}, {order.ChangeAmount.ToString(CultureInfo.InvariantCulture)},
+        '{Services.SqliteDb.Escape(order.Status)}', '{order.CreatedAt:yyyy-MM-dd HH:mm:ss}', {order.CreatedTimestamp},
         {order.TotalAmount.ToString(CultureInfo.InvariantCulture)});");
 
             foreach (var item in order.Items)
             {
                 sb.AppendLine($@"
 INSERT INTO OrderItems (OrderID, ProductID, Quantity, UnitPriceAtTime, ProductName, Supplier, Category)
-VALUES ('{Services.SqliteDb.Escape(order.OrderId)}', {item.ProductId}, {item.Quantity}, {item.UnitPrice.ToString(CultureInfo.InvariantCulture)}, 
+VALUES ('{Services.SqliteDb.Escape(order.OrderId)}', {item.ProductId}, {item.Quantity}, {item.UnitPrice.ToString(CultureInfo.InvariantCulture)},
         '{Services.SqliteDb.Escape(item.ProductName)}', '{Services.SqliteDb.Escape(item.Supplier)}', '{Services.SqliteDb.Escape(item.Category)}');");
             }
         }

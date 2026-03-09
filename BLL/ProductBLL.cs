@@ -3,9 +3,6 @@ using Supermarket.Entities;
 
 namespace Supermarket.BLL
 {
-    /// <summary>
-    /// 商品业务逻辑层
-    /// </summary>
     public class ProductBLL
     {
         private readonly ProductDAL _productDAL;
@@ -30,20 +27,20 @@ namespace Supermarket.BLL
             error = "";
             if (product.ID <= 0)
             {
-                error = "商品ID必须大于0。";
+                error = "\u5546\u54C1ID\u5FC5\u987B\u5927\u4E8E0\u3002";
                 return false;
             }
 
             if (string.IsNullOrWhiteSpace(product.Name))
             {
-                error = "商品名称不能为空。";
+                error = "\u5546\u54C1\u540D\u79F0\u4E0D\u80FD\u4E3A\u7A7A\u3002";
                 return false;
             }
 
             var existing = _productDAL.GetProductById(product.ID);
             if (existing != null && !existing.IsDeleted)
             {
-                error = "商品ID已存在。";
+                error = "\u5546\u54C1ID\u5DF2\u5B58\u5728\u3002";
                 return false;
             }
 
@@ -57,7 +54,7 @@ namespace Supermarket.BLL
             var existing = _productDAL.GetProductById(product.ID);
             if (existing == null)
             {
-                error = "商品不存在。";
+                error = "\u5546\u54C1\u4E0D\u5B58\u5728\u3002";
                 return false;
             }
 
@@ -71,7 +68,7 @@ namespace Supermarket.BLL
             var product = _productDAL.GetProductById(id);
             if (product == null)
             {
-                error = "商品不存在。";
+                error = "\u5546\u54C1\u4E0D\u5B58\u5728\u3002";
                 return false;
             }
 
@@ -85,14 +82,14 @@ namespace Supermarket.BLL
             var product = _productDAL.GetProductById(productId);
             if (product == null)
             {
-                error = "商品不存在。";
+                error = "\u5546\u54C1\u4E0D\u5B58\u5728\u3002";
                 return false;
             }
 
             var newStock = product.StockCount + quantityChange;
             if (newStock < 0)
             {
-                error = "库存不足。";
+                error = "\u5E93\u5B58\u4E0D\u8DB3\u3002";
                 return false;
             }
 
@@ -102,9 +99,7 @@ namespace Supermarket.BLL
 
         public List<Product> GetLowStockProducts()
         {
-            return _productDAL.GetAllProducts()
-                .Where(p => p.StockCount <= p.LowStockThreshold)
-                .ToList();
+            return _productDAL.GetAllProducts().Where(p => p.StockCount <= p.LowStockThreshold).ToList();
         }
     }
 }

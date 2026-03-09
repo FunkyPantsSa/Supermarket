@@ -19,6 +19,8 @@ namespace Supermarket
         private readonly TransactionLogBLL _transactionLogBLL;
         private TabPage _tabTransactionLogs = null!;
         private TransactionLogPanel? _transactionLogPanel;
+        private Button? _btnNavTransactionLogs;
+        private readonly TableLayoutPanel _navButtonLayout = new();
         private readonly BindingList<OrderItem> _cart = new();
         private readonly Random _random = new();
         private readonly PrintDocument _orderPrintDocument = new();
@@ -36,6 +38,10 @@ namespace Supermarket
         private readonly Label _lblChangeAmount = new();
         private readonly Button _btnVoidOrder = new();
         private readonly Button _btnExportLogs = new();
+        private readonly Button _btnStatToday = new();
+        private readonly Button _btnStatThisMonth = new();
+        private readonly Button _btnStatLastMonth = new();
+        private readonly Button _btnStatAll = new();
         private readonly TabPage _tabGenerate = new("订单生成");
         private int _titleClickCount;
         private bool _generatePageUnlocked;
@@ -78,6 +84,7 @@ namespace Supermarket
             SetupHiddenGeneratePage();
             ApplyUniformButtonSize();
             WireEvents();
+            ConfigureNavLayout();
             ApplyNavStyles();
             _orderPrintDocument.PrintPage += OrderPrintDocument_PrintPage;
 
@@ -102,6 +109,7 @@ namespace Supermarket
         private void WireEvents()
         {
             btnAddToCart.Click += btnAddToCart_Click;
+            txtProductId.KeyDown += txtProductId_KeyDown;
             btnCheckout.Click += btnCheckout_Click;
             btnClearCart.Click += btnClearCart_Click;
             dgvCart.KeyDown += dgvCart_KeyDown;
@@ -116,22 +124,17 @@ namespace Supermarket
                 RefreshStatsPage();
             };
             
-            // 添加收银流水页面入口（放在订单管理下面）
-            var btnNavTransactionLogs = new Button
+            _btnNavTransactionLogs = new Button
             {
                 Text = "收银流水",
-                Location = new Point(18, 184 + 52), // 订单管理是184，加上52的间距 = 236
-                Size = new Size(154, 42) // 和其他按钮一样大小，样式在ApplyNavStyles中统一设置
+                Dock = DockStyle.Fill
             };
-            btnNavTransactionLogs.Click += (s, e) =>
+            _btnNavTransactionLogs.Click += (s, e) =>
             {
                 ShowPage(_tabTransactionLogs);
                 RefreshTransactionLogsPage();
             };
-            panelNav.Controls.Add(btnNavTransactionLogs);
-            
-            // 调整统计页面按钮位置（放在收银流水下面）
-            btnNavStats.Location = new Point(18, 236 + 52); // 收银流水是236，加上52的间距 = 288
+            _navButtonLayout.Controls.Add(_btnNavTransactionLogs, 0, 3);
             
             lblNavTitle.Click += lblNavTitle_Click;
 
@@ -185,6 +188,29 @@ namespace Supermarket
                 dtpStatStart.Value = DateTime.Today;
                 dtpStatEnd.Value = DateTime.Now;
                 ApplyStatsFilter();
+            };
+            _btnStatToday.Click += (s, e) => ApplyStatQuickRange(DateTime.Today, DateTime.Now);
+            _btnStatThisMonth.Click += (s, e) =>
+            {
+                var start = new DateTime(DateTime.Today.Year, DateTime.Today.Month, 1);
+                ApplyStatQuickRange(start, DateTime.Now);
+            };
+            _btnStatLastMonth.Click += (s, e) =>
+            {
+                var thisMonthStart = new DateTime(DateTime.Today.Year, DateTime.Today.Month, 1);
+                var lastMonthStart = thisMonthStart.AddMonths(-1);
+                var lastMonthEnd = thisMonthStart.AddTicks(-1);
+                ApplyStatQuickRange(lastMonthStart, lastMonthEnd);
+            };
+            _btnStatAll.Click += (s, e) =>
+            {
+                var all = _orderService.Orders.OrderBy(o => o.CreatedAt).ToList();
+                if (all.Count == 0)
+                {
+                    ApplyStatQuickRange(DateTime.Today, DateTime.Now);
+                    return;
+                }
+                ApplyStatQuickRange(all.First().CreatedAt, all.Last().CreatedAt);
             };
             btnGenerateOrders.Click += btnGenerateOrders_Click;
         }
@@ -298,6 +324,14 @@ namespace Supermarket
         {
             panelStatsTop.Controls.Clear();
             panelStatsTop.Height = 120;
+            _btnStatToday.Text = "今日数据";
+            _btnStatThisMonth.Text = "本月数据";
+            _btnStatLastMonth.Text = "上月数据";
+            _btnStatAll.Text = "所有数据";
+            SetWideButton(_btnStatToday);
+            SetWideButton(_btnStatThisMonth);
+            SetWideButton(_btnStatLastMonth);
+            SetWideButton(_btnStatAll);
 
             var table = new TableLayoutPanel
             {
@@ -311,7 +345,7 @@ namespace Supermarket
             table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
 
             var row1 = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false, AutoScroll = true };
-            row1.Controls.AddRange(new Control[] { lblTodayRevenue, lblFilterSummary, btnStatsClearFilter });
+            row1.Controls.AddRange(new Control[] { lblTodayRevenue, lblFilterSummary, _btnStatToday, _btnStatThisMonth, _btnStatLastMonth, _btnStatAll, btnStatsClearFilter });
 
             var row2 = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false, AutoScroll = true };
             row2.Controls.AddRange(new Control[] { lblStatStart, dtpStatStart, lblStatEnd, dtpStatEnd, btnApplyStatsFilter });
@@ -329,17 +363,20 @@ namespace Supermarket
             {
                 Dock = DockStyle.Fill,
                 ColumnCount = 1,
-                RowCount = 2
+                RowCount = 3
             };
             table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
             table.RowStyles.Add(new RowStyle(SizeType.Absolute, 120F));
-            table.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
+            table.RowStyles.Add(new RowStyle(SizeType.Percent, 62F));
+            table.RowStyles.Add(new RowStyle(SizeType.Percent, 38F));
 
             panelStatsTop.Dock = DockStyle.Fill;
             dgvStatsOrders.Dock = DockStyle.Fill;
+            _dgvStatsSummary.Dock = DockStyle.Fill;
 
             table.Controls.Add(panelStatsTop, 0, 0);
             table.Controls.Add(dgvStatsOrders, 0, 1);
+            table.Controls.Add(_dgvStatsSummary, 0, 2);
             tabStats.Controls.Add(table);
         }
         
@@ -410,24 +447,119 @@ namespace Supermarket
         private void ShowPage(TabPage page)
         {
             tabMain.SelectedTab = page;
+            UpdateNavActiveState(page);
+        }
+
+        private void ConfigureNavLayout()
+        {
+            panelNav.Controls.Clear();
+            panelNav.Width = 220;
+            panelNav.Padding = new Padding(12, 16, 12, 12);
+            panelNav.BackColor = Color.FromArgb(28, 34, 45);
+
+            lblNavTitle.Dock = DockStyle.Top;
+            lblNavTitle.AutoSize = false;
+            lblNavTitle.Text = "功能区";
+            lblNavTitle.TextAlign = ContentAlignment.MiddleLeft;
+            lblNavTitle.Font = new Font("Microsoft YaHei UI", 13F, FontStyle.Bold);
+            lblNavTitle.ForeColor = Color.FromArgb(235, 242, 255);
+            lblNavTitle.Margin = new Padding(4, 0, 4, 14);
+            lblNavTitle.Height = 36;
+
+            _navButtonLayout.Dock = DockStyle.Top;
+            _navButtonLayout.ColumnCount = 1;
+            _navButtonLayout.RowCount = 5;
+            _navButtonLayout.Height = 5 * 54;
+            _navButtonLayout.Padding = new Padding(0);
+            _navButtonLayout.Margin = new Padding(0);
+            _navButtonLayout.BackColor = Color.Transparent;
+            _navButtonLayout.ColumnStyles.Clear();
+            _navButtonLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+            _navButtonLayout.RowStyles.Clear();
+            for (var i = 0; i < 5; i++)
+            {
+                _navButtonLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 54F));
+            }
+
+            var buttons = new[] { btnNavCashier, btnNavProducts, btnNavOrders, _btnNavTransactionLogs, btnNavStats }
+                .Where(b => b != null)
+                .Cast<Button>()
+                .ToList();
+
+            foreach (var btn in buttons)
+            {
+                btn.Dock = DockStyle.Fill;
+                btn.Margin = new Padding(0, 0, 0, 8);
+            }
+
+            _navButtonLayout.Controls.Clear();
+            _navButtonLayout.Controls.Add(btnNavCashier, 0, 0);
+            _navButtonLayout.Controls.Add(btnNavProducts, 0, 1);
+            _navButtonLayout.Controls.Add(btnNavOrders, 0, 2);
+            if (_btnNavTransactionLogs != null)
+            {
+                _navButtonLayout.Controls.Add(_btnNavTransactionLogs, 0, 3);
+            }
+            _navButtonLayout.Controls.Add(btnNavStats, 0, 4);
+
+            panelNav.Controls.Add(_navButtonLayout);
+            panelNav.Controls.Add(lblNavTitle);
         }
 
         private void ApplyNavStyles()
         {
-            // 获取所有导航按钮（包括收银流水）
-            var navButtons = panelNav.Controls.OfType<Button>()
-                .Where(b => b.Text == "收银台" || b.Text == "商品管理" || b.Text == "订单管理" || 
-                           b.Text == "收银流水" || b.Text == "统计页面")
+            var navTitles = new HashSet<string> { "收银台", "商品管理", "订单管理", "收银流水", "统计页面" };
+            var navButtons = EnumerateControls(panelNav)
+                .OfType<Button>()
+                .Where(b => navTitles.Contains(b.Text))
                 .ToList();
             
             foreach (var btn in navButtons)
             {
-                btn.ForeColor = Color.White;
-                btn.BackColor = Color.FromArgb(57, 62, 70); // 统一的按钮背景色
+                btn.ForeColor = Color.FromArgb(227, 235, 252);
+                btn.BackColor = Color.FromArgb(46, 56, 70);
                 btn.FlatStyle = FlatStyle.Flat;
                 btn.FlatAppearance.BorderSize = 0;
-                btn.FlatAppearance.MouseOverBackColor = Color.FromArgb(70, 75, 85); // 鼠标悬停时的颜色
+                btn.FlatAppearance.MouseOverBackColor = Color.FromArgb(64, 78, 96);
+                btn.TextAlign = ContentAlignment.MiddleCenter;
+                btn.Font = new Font("Microsoft YaHei UI", 11F, FontStyle.Bold);
+                btn.Cursor = Cursors.Hand;
+                btn.Padding = new Padding(0);
             }
+
+            UpdateNavActiveState(tabMain.SelectedTab ?? tabCashier);
+        }
+
+        private void UpdateNavActiveState(TabPage activePage)
+        {
+            var activeColor = Color.FromArgb(21, 121, 219);
+            var normalColor = Color.FromArgb(46, 56, 70);
+            var normalText = Color.FromArgb(227, 235, 252);
+
+            var pairs = new List<(Button? Btn, TabPage Page)>
+            {
+                (btnNavCashier, tabCashier),
+                (btnNavProducts, tabProducts),
+                (btnNavOrders, tabOrders),
+                (_btnNavTransactionLogs, _tabTransactionLogs),
+                (btnNavStats, tabStats)
+            };
+
+            foreach (var pair in pairs.Where(p => p.Btn != null))
+            {
+                var btn = pair.Btn!;
+                var isActive = ReferenceEquals(pair.Page, activePage);
+                btn.BackColor = isActive ? activeColor : normalColor;
+                btn.ForeColor = normalText;
+            }
+        }
+
+        private void txtProductId_KeyDown(object? sender, KeyEventArgs e)
+        {
+            if (e.KeyCode != Keys.Enter) return;
+            e.SuppressKeyPress = true;
+            btnAddToCart_Click(sender, EventArgs.Empty);
+            txtProductId.SelectAll();
         }
 
         private void InitCashierSelector()
@@ -933,6 +1065,13 @@ namespace Supermarket
             var total = filtered.Sum(o => o.TotalAmount);
             lblFilterSummary.Text = $"筛选结果：{filtered.Count} 单，合计 {total:F2}";
             RefreshAllOrdersSummary(filtered, start, end);
+        }
+
+        private void ApplyStatQuickRange(DateTime start, DateTime end)
+        {
+            dtpStatStart.Value = start;
+            dtpStatEnd.Value = end;
+            ApplyStatsFilter();
         }
 
         private void RefreshAllOrdersSummary(List<OrderRecord> filteredOrders, DateTime start, DateTime end)
@@ -1833,7 +1972,3 @@ namespace Supermarket
         }
     }
 }
-
-
-
-
