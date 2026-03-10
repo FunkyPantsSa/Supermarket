@@ -56,12 +56,17 @@ CREATE TABLE IF NOT EXISTS TransactionLogs (
     LogID INTEGER PRIMARY KEY AUTOINCREMENT,
     Type TEXT NOT NULL,
     Amount REAL NOT NULL,
+    CashierName TEXT NOT NULL DEFAULT '',
     Detail TEXT NOT NULL,
     Timestamp TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS Users (
     UserName TEXT PRIMARY KEY,
     PasswordHash TEXT NOT NULL,
+    DisplayName TEXT NOT NULL DEFAULT '',
+    Role TEXT NOT NULL DEFAULT 'Cashier',
+    CashierId TEXT NOT NULL DEFAULT '',
+    IsActive INTEGER NOT NULL DEFAULT 1,
     UpdatedAt TEXT NOT NULL
 );");
 
@@ -72,6 +77,11 @@ CREATE TABLE IF NOT EXISTS Users (
             EnsureColumn(dbPath, "Orders", "ReceivedAmount", "REAL NOT NULL DEFAULT 0");
             EnsureColumn(dbPath, "Orders", "ChangeAmount", "REAL NOT NULL DEFAULT 0");
             EnsureColumn(dbPath, "Orders", "Status", "TEXT NOT NULL DEFAULT 'Completed'");
+            EnsureColumn(dbPath, "Users", "DisplayName", "TEXT NOT NULL DEFAULT ''");
+            EnsureColumn(dbPath, "Users", "Role", "TEXT NOT NULL DEFAULT 'Cashier'");
+            EnsureColumn(dbPath, "Users", "CashierId", "TEXT NOT NULL DEFAULT ''");
+            EnsureColumn(dbPath, "Users", "IsActive", "INTEGER NOT NULL DEFAULT 1");
+            EnsureColumn(dbPath, "TransactionLogs", "CashierName", "TEXT NOT NULL DEFAULT ''");
 
             var hasOrderItems = ScalarInt(dbPath, "SELECT COUNT(1) FROM sqlite_master WHERE type='table' AND name='OrderItems'") > 0;
             var hasOrderLines = ScalarInt(dbPath, "SELECT COUNT(1) FROM sqlite_master WHERE type='table' AND name='OrderLines'") > 0;
@@ -119,8 +129,57 @@ INSERT INTO Cashiers (CashierId, CashierName) VALUES
                 var now = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
                 var defaultHash = AuthService.HashPassword("admin", "123456");
                 ExecuteNonQuery(dbPath,
-                    $"INSERT INTO Users (UserName, PasswordHash, UpdatedAt) VALUES ('admin', '{defaultHash}', '{now}');");
+                    $"INSERT INTO Users (UserName, PasswordHash, DisplayName, Role, CashierId, IsActive, UpdatedAt) VALUES ('admin', '{defaultHash}', '系统管理员', 'Admin', '', 1, '{now}');");
             }
+
+            ExecuteNonQuery(dbPath, @"
+UPDATE Users
+SET DisplayName = CASE
+        WHEN UserName = 'admin' AND (DisplayName IS NULL OR DisplayName = '') THEN '系统管理员'
+        ELSE DisplayName
+    END,
+    Role = CASE
+        WHEN UserName = 'admin' AND (Role IS NULL OR Role = '' OR Role = 'Cashier') THEN 'Admin'
+        ELSE Role
+    END,
+    CashierId = COALESCE(CashierId, ''),
+    IsActive = CASE WHEN IsActive IS NULL OR IsActive = 0 THEN 1 ELSE IsActive END
+WHERE UserName = 'admin';");
+
+            SyncCashierUsers(dbPath);
+        }
+
+        private static void SyncCashierUsers(string dbPath)
+        {
+            var rows = Query(dbPath, "SELECT CashierId, CashierName FROM Cashiers ORDER BY CashierId;");
+            var now = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+            var sql = new System.Text.StringBuilder();
+            sql.AppendLine("BEGIN;");
+
+            foreach (var row in rows)
+            {
+                var cashierId = row["CashierId"] ?? "";
+                var cashierName = row["CashierName"] ?? "";
+                if (string.IsNullOrWhiteSpace(cashierId))
+                {
+                    continue;
+                }
+
+                var userName = cashierId.Trim().ToLowerInvariant();
+                var defaultHash = AuthService.HashPassword(userName, "123456");
+                sql.AppendLine($@"
+INSERT INTO Users (UserName, PasswordHash, DisplayName, Role, CashierId, IsActive, UpdatedAt)
+SELECT '{Escape(userName)}', '{defaultHash}', '{Escape(cashierName)}', 'Cashier', '{Escape(cashierId)}', 1, '{now}'
+WHERE NOT EXISTS (SELECT 1 FROM Users WHERE UserName = '{Escape(userName)}');
+UPDATE Users
+SET DisplayName = '{Escape(cashierName)}',
+    CashierId = '{Escape(cashierId)}',
+    Role = CASE WHEN Role IS NULL OR Role = '' THEN 'Cashier' ELSE Role END
+WHERE UserName = '{Escape(userName)}';");
+            }
+
+            sql.AppendLine("COMMIT;");
+            ExecuteNonQuery(dbPath, sql.ToString());
         }
 
         private static void NormalizeText(string dbPath)

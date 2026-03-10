@@ -19,7 +19,7 @@ namespace Supermarket
                 return;
             }
 
-            Application.Run(new Form1(loginForm.LoginUserName));
+            Application.Run(new Form1(loginForm.CurrentUser!, authService));
         }
     }
 }

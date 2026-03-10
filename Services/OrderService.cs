@@ -156,7 +156,7 @@ ORDER BY ItemID");
         public bool VoidOrder(string orderId, string reason, out string message)
         {
             var safeOrderId = SqliteDb.Escape(orderId);
-            var rows = SqliteDb.Query(_dbPath, $"SELECT Status, TotalAmount FROM Orders WHERE OrderId = '{safeOrderId}' LIMIT 1");
+            var rows = SqliteDb.Query(_dbPath, $"SELECT Status, TotalAmount, CashierName FROM Orders WHERE OrderId = '{safeOrderId}' LIMIT 1");
             if (rows.Count == 0)
             {
                 message = "\u672A\u627E\u5230\u8BA2\u5355\u3002";
@@ -186,7 +186,8 @@ ORDER BY ItemID");
             }
 
             sb.AppendLine($"UPDATE Orders SET Status = 'Voided' WHERE OrderId = '{safeOrderId}';");
-            sb.AppendLine($"INSERT INTO TransactionLogs (Type, Amount, Detail, Timestamp) VALUES ('\u9000\u6B3E', {(-totalAmount).ToString(CultureInfo.InvariantCulture)}, '\u8BA2\u5355 {safeOrderId} \u4F5C\u5E9F: {SqliteDb.Escape(reason)}', '{DateTime.Now:yyyy-MM-dd HH:mm:ss}');");
+            var cashierName = SqliteDb.Escape(rows[0].ContainsKey("CashierName") ? rows[0]["CashierName"] ?? "" : "");
+            sb.AppendLine($"INSERT INTO TransactionLogs (Type, Amount, CashierName, Detail, Timestamp) VALUES ('\u9000\u6B3E', {(-totalAmount).ToString(CultureInfo.InvariantCulture)}, '{cashierName}', '\u8BA2\u5355 {safeOrderId} \u4F5C\u5E9F: {SqliteDb.Escape(reason)}', '{DateTime.Now:yyyy-MM-dd HH:mm:ss}');");
             sb.AppendLine("COMMIT;");
 
             SqliteDb.ExecuteNonQuery(_dbPath, sb.ToString());
@@ -243,7 +244,7 @@ WHERE 1 = 1");
         private static void AppendSalesLogSql(StringBuilder sb, OrderRecord order)
         {
             sb.AppendLine(
-                $"INSERT INTO TransactionLogs (Type, Amount, Detail, Timestamp) VALUES ('\u9500\u552E', {order.TotalAmount.ToString(CultureInfo.InvariantCulture)}, '\u8BA2\u5355 {SqliteDb.Escape(order.OrderId)} {SqliteDb.Escape(order.PayType)}', '{order.CreatedAt:yyyy-MM-dd HH:mm:ss}');");
+                $"INSERT INTO TransactionLogs (Type, Amount, CashierName, Detail, Timestamp) VALUES ('\u9500\u552E', {order.TotalAmount.ToString(CultureInfo.InvariantCulture)}, '{SqliteDb.Escape(order.CashierName)}', '\u8BA2\u5355 {SqliteDb.Escape(order.OrderId)} {SqliteDb.Escape(order.PayType)}', '{order.CreatedAt:yyyy-MM-dd HH:mm:ss}');");
         }
 
         private static void AppendOrderSql(StringBuilder sb, OrderRecord order)

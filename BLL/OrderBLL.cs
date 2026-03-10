@@ -57,7 +57,7 @@ namespace Supermarket.BLL
 
             AppendOrderSql(sb, order);
             sb.AppendLine(
-                $"INSERT INTO TransactionLogs (Type, Amount, Detail, Timestamp) VALUES ('\u9500\u552E', {order.TotalAmount.ToString(CultureInfo.InvariantCulture)}, '\u8BA2\u5355 {Services.SqliteDb.Escape(order.OrderId)} {Services.SqliteDb.Escape(order.PayType)}', '{order.CreatedAt:yyyy-MM-dd HH:mm:ss}');");
+                $"INSERT INTO TransactionLogs (Type, Amount, CashierName, Detail, Timestamp) VALUES ('\u9500\u552E', {order.TotalAmount.ToString(CultureInfo.InvariantCulture)}, '{Services.SqliteDb.Escape(order.CashierName)}', '\u8BA2\u5355 {Services.SqliteDb.Escape(order.OrderId)} {Services.SqliteDb.Escape(order.PayType)}', '{order.CreatedAt:yyyy-MM-dd HH:mm:ss}');");
 
             sb.AppendLine("COMMIT;");
 
@@ -99,7 +99,7 @@ namespace Supermarket.BLL
 
             sb.AppendLine($"UPDATE Orders SET Status = 'Voided' WHERE OrderId = '{Services.SqliteDb.Escape(orderId)}';");
             sb.AppendLine(
-                $"INSERT INTO TransactionLogs (Type, Amount, Detail, Timestamp) VALUES ('\u9000\u6B3E', {(-order.TotalAmount).ToString(CultureInfo.InvariantCulture)}, '\u8BA2\u5355 {Services.SqliteDb.Escape(orderId)} \u4F5C\u5E9F: {Services.SqliteDb.Escape(reason)}', '{DateTime.Now:yyyy-MM-dd HH:mm:ss}');");
+                $"INSERT INTO TransactionLogs (Type, Amount, CashierName, Detail, Timestamp) VALUES ('\u9000\u6B3E', {(-order.TotalAmount).ToString(CultureInfo.InvariantCulture)}, '{Services.SqliteDb.Escape(order.CashierName)}', '\u8BA2\u5355 {Services.SqliteDb.Escape(orderId)} \u4F5C\u5E9F: {Services.SqliteDb.Escape(reason)}', '{DateTime.Now:yyyy-MM-dd HH:mm:ss}');");
 
             sb.AppendLine("COMMIT;");
 

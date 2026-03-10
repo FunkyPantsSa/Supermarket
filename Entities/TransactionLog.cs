@@ -5,6 +5,7 @@ namespace Supermarket.Entities
         public long LogId { get; set; }
         public string Type { get; set; } = "";
         public decimal Amount { get; set; }
+        public string CashierName { get; set; } = "";
         public string Detail { get; set; } = "";
         public DateTime Timestamp { get; set; }
     }

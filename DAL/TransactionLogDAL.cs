@@ -19,7 +19,7 @@ namespace Supermarket.DAL
         {
             Services.SqliteDb.EnsureCreated(_dbPath);
             var sql = new System.Text.StringBuilder(@"
-SELECT LogID, Type, Amount, Detail, Timestamp
+SELECT LogID, Type, Amount, CashierName, Detail, Timestamp
 FROM TransactionLogs
 WHERE 1 = 1");
 
@@ -41,19 +41,20 @@ WHERE 1 = 1");
                     LogId = long.TryParse(r["LogID"], out var id) ? id : 0,
                     Type = r["Type"] ?? "",
                     Amount = decimal.Parse(r["Amount"] ?? "0", CultureInfo.InvariantCulture),
+                    CashierName = r["CashierName"] ?? "",
                     Detail = r["Detail"] ?? "",
                     Timestamp = DateTime.TryParse(r["Timestamp"], out var t) ? t : DateTime.Now
                 })
                 .ToList();
         }
 
-        public void InsertLog(string type, decimal amount, string detail)
+        public void InsertLog(string type, decimal amount, string detail, string cashierName = "")
         {
             Services.SqliteDb.EnsureCreated(_dbPath);
             var sql = $@"
-INSERT INTO TransactionLogs (Type, Amount, Detail, Timestamp)
+INSERT INTO TransactionLogs (Type, Amount, CashierName, Detail, Timestamp)
 VALUES ('{Services.SqliteDb.Escape(type)}', {amount.ToString(CultureInfo.InvariantCulture)}, 
-        '{Services.SqliteDb.Escape(detail)}', '{DateTime.Now:yyyy-MM-dd HH:mm:ss}');";
+        '{Services.SqliteDb.Escape(cashierName)}', '{Services.SqliteDb.Escape(detail)}', '{DateTime.Now:yyyy-MM-dd HH:mm:ss}');";
             
             Services.SqliteDb.ExecuteNonQuery(_dbPath, sql);
         }

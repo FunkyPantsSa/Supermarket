@@ -37,41 +37,43 @@ namespace Supermarket
         private readonly NumericUpDown _numReceived = new();
         private readonly Label _lblChangeAmount = new();
         private readonly Button _btnVoidOrder = new();
-        private readonly Button _btnExportLogs = new();
+        private readonly TextBox _txtProductNameSearch = new();
+        private readonly ListBox _lstProductMatches = new();
+        private readonly Button _btnAddByName = new();
+        private readonly List<Product> _productNameMatches = new();
         private readonly Button _btnStatToday = new();
         private readonly Button _btnStatThisMonth = new();
         private readonly Button _btnStatLastMonth = new();
         private readonly Button _btnStatAll = new();
         private readonly TabPage _tabGenerate = new("订单生成");
+        private readonly Button _btnCloseGenerate = new();
         private int _titleClickCount;
         private bool _generatePageUnlocked;
 
-        public Form1(string? loginUserName = null)
+        public Form1(AppUser currentUser, AuthService authService)
         {
+            _currentUser = currentUser;
+            _authService = authService;
             InitializeComponent();
             KeyPreview = true;
 
-            if (!string.IsNullOrWhiteSpace(loginUserName))
-            {
-                Text = $"超市收银管理系统 - 当前用户: {loginUserName}";
-            }
-
             var dbDir = Path.Combine(AppContext.BaseDirectory, "db");
-            var dbPath = Path.Combine(dbDir, "supermarket.db");
+            _dbPath = Path.Combine(dbDir, "supermarket.db");
+            Text = $"超市营业管理系统 - {_currentUser.DisplayTitle}（{_currentUser.DisplayRole}）";
 
-            _inventoryService = new InventoryService(dbPath);
+            _inventoryService = new InventoryService(_dbPath);
             _inventoryService.Load();
 
-            _orderService = new OrderService(dbPath);
+            _orderService = new OrderService(_dbPath);
             _orderService.Load();
-            _cashierService = new CashierService(dbPath);
+            _cashierService = new CashierService(_dbPath);
             _cashierService.Load();
 
             // 初始化BLL层
-            _productBLL = new ProductBLL(dbPath);
-            _orderBLL = new OrderBLL(dbPath);
-            _statisticsBLL = new StatisticsBLL(dbPath);
-            _transactionLogBLL = new TransactionLogBLL(dbPath);
+            _productBLL = new ProductBLL(_dbPath);
+            _orderBLL = new OrderBLL(_dbPath);
+            _statisticsBLL = new StatisticsBLL(_dbPath);
+            _transactionLogBLL = new TransactionLogBLL(_dbPath);
 
             InitCartGrid();
             InitProductGrid();
@@ -84,8 +86,6 @@ namespace Supermarket
             SetupHiddenGeneratePage();
             ApplyUniformButtonSize();
             WireEvents();
-            ConfigureNavLayout();
-            ApplyNavStyles();
             _orderPrintDocument.PrintPage += OrderPrintDocument_PrintPage;
 
             dtpStatStart.Value = DateTime.Today;
@@ -99,10 +99,10 @@ namespace Supermarket
             RefreshOrderGrid();
             RefreshStatsPage();
             UpdateTotalAmount();
-            
-            // 初始化收银流水TabPage
-            InitTransactionLogsTab();
-            
+
+            InitializeRoleAwareUi();
+            ConfigureNavLayout();
+            ApplyNavStyles();
             ShowPage(tabCashier);
         }
 
@@ -110,6 +110,10 @@ namespace Supermarket
         {
             btnAddToCart.Click += btnAddToCart_Click;
             txtProductId.KeyDown += txtProductId_KeyDown;
+            _txtProductNameSearch.TextChanged += (s, e) => UpdateProductNameMatches();
+            _txtProductNameSearch.KeyDown += txtProductNameSearch_KeyDown;
+            _btnAddByName.Click += btnAddByName_Click;
+            _lstProductMatches.DoubleClick += (s, e) => AddSelectedMatchToCart();
             btnCheckout.Click += btnCheckout_Click;
             btnClearCart.Click += btnClearCart_Click;
             dgvCart.KeyDown += dgvCart_KeyDown;
@@ -123,18 +127,6 @@ namespace Supermarket
                 ShowPage(tabStats);
                 RefreshStatsPage();
             };
-            
-            _btnNavTransactionLogs = new Button
-            {
-                Text = "收银流水",
-                Dock = DockStyle.Fill
-            };
-            _btnNavTransactionLogs.Click += (s, e) =>
-            {
-                ShowPage(_tabTransactionLogs);
-                RefreshTransactionLogsPage();
-            };
-            _navButtonLayout.Controls.Add(_btnNavTransactionLogs, 0, 3);
             
             lblNavTitle.Click += lblNavTitle_Click;
 
@@ -157,7 +149,6 @@ namespace Supermarket
             btnOrderRefresh.Click += (s, e) => RefreshOrderGrid();
             btnOrderPrint.Click += btnOrderPrint_Click;
             _btnVoidOrder.Click += btnVoidOrder_Click;
-            _btnExportLogs.Click += btnExportLogs_Click;
             btnOrderToday.Click += (s, e) => ApplyOrderQuickRange(DateTime.Today, DateTime.Now, "今日收入");
             btnOrderYesterday.Click += (s, e) =>
             {
@@ -217,18 +208,23 @@ namespace Supermarket
 
         private void lblNavTitle_Click(object? sender, EventArgs e)
         {
-            if (_generatePageUnlocked) return;
+            if (!IsAdmin) return;
+            if (_btnNavGenerate?.Visible == true)
+            {
+                ShowGeneratePage();
+                return;
+            }
             _titleClickCount++;
             if (_titleClickCount < 5) return;
+            _titleClickCount = 0;
 
-            _generatePageUnlocked = true;
-            tabMain.TabPages.Add(_tabGenerate);
-            tabMain.SelectedTab = _tabGenerate;
+            UnlockGeneratePage();
             MessageBox.Show("订单生成页面已解锁。", "提示", MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
 
         private void ConfigureAutoLayouts()
         {
+            ConfigureCashierLayouts();
             ConfigureProductTopLayout();
             ConfigureOrderTopLayout();
             ConfigureStatsTopLayout();
@@ -236,15 +232,164 @@ namespace Supermarket
             ConfigureFormVisuals();
         }
 
+        private void ConfigureCashierLayouts()
+        {
+            panelCashierLeft.Controls.Clear();
+            panelCashierRight.Controls.Clear();
+            panelCashierLeft.Width = 320;
+            panelCashierRight.Width = 320;
+            panelCashierCenter.Padding = new Padding(12, 0, 12, 0);
+
+            var leftLayout = new TableLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                ColumnCount = 1,
+                RowCount = 12,
+                Padding = new Padding(16)
+            };
+            leftLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+            leftLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 34F));
+            leftLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 28F));
+            leftLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 36F));
+            leftLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 28F));
+            leftLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 36F));
+            leftLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 28F));
+            leftLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 108F));
+            leftLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 28F));
+            leftLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 36F));
+            leftLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 28F));
+            leftLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 36F));
+            leftLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 48F));
+
+            lblInputTitle.Text = "商品输入";
+            lblInputTitle.Dock = DockStyle.Fill;
+            lblId.Text = "商品ID / 条码";
+            var lblNameSearch = new Label { Text = "商品名称模糊搜索", Dock = DockStyle.Fill, TextAlign = ContentAlignment.BottomLeft, ForeColor = AppTheme.TextPrimary };
+            var lblMatches = new Label { Text = "匹配商品", Dock = DockStyle.Fill, TextAlign = ContentAlignment.BottomLeft, ForeColor = AppTheme.TextPrimary };
+            lblQty.Text = "数量";
+
+            txtProductId.Dock = DockStyle.Fill;
+            _txtProductNameSearch.Dock = DockStyle.Fill;
+            _txtProductNameSearch.PlaceholderText = "输入商品名关键字，例如：可乐";
+            _lstProductMatches.Dock = DockStyle.Fill;
+            _lstProductMatches.IntegralHeight = false;
+            _lstProductMatches.Height = 96;
+            numQuantity.Dock = DockStyle.Left;
+            numQuantity.Width = 260;
+            cmbCashier.Dock = DockStyle.Fill;
+            btnAddToCart.Text = "按编码加入";
+            btnAddToCart.Height = 40;
+            _btnAddByName.Text = "按名称加入";
+            _btnAddByName.Height = 40;
+
+            var actionRow = new TableLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                ColumnCount = 2
+            };
+            actionRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50F));
+            actionRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50F));
+            actionRow.Controls.Add(btnAddToCart, 0, 0);
+            actionRow.Controls.Add(_btnAddByName, 1, 0);
+
+            leftLayout.Controls.Add(lblInputTitle, 0, 0);
+            leftLayout.Controls.Add(lblId, 0, 1);
+            leftLayout.Controls.Add(txtProductId, 0, 2);
+            leftLayout.Controls.Add(lblNameSearch, 0, 3);
+            leftLayout.Controls.Add(_txtProductNameSearch, 0, 4);
+            leftLayout.Controls.Add(lblMatches, 0, 5);
+            leftLayout.Controls.Add(_lstProductMatches, 0, 6);
+            leftLayout.Controls.Add(lblQty, 0, 7);
+            leftLayout.Controls.Add(numQuantity, 0, 8);
+            leftLayout.Controls.Add(lblCashier, 0, 9);
+            leftLayout.Controls.Add(cmbCashier, 0, 10);
+            leftLayout.Controls.Add(actionRow, 0, 11);
+            panelCashierLeft.Controls.Add(leftLayout);
+
+            AppTheme.StyleInput(_txtProductNameSearch);
+            AppTheme.StyleInput(_lstProductMatches);
+
+            var rightLayout = new TableLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                ColumnCount = 1,
+                RowCount = 10,
+                Padding = new Padding(16)
+            };
+            rightLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+            rightLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 70F));
+            rightLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 34F));
+            rightLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 38F));
+            rightLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 34F));
+            rightLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 38F));
+            rightLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 34F));
+            rightLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 38F));
+            rightLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 34F));
+            rightLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 42F));
+            rightLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
+
+            lblTotalAmount.Dock = DockStyle.Fill;
+            lblTotalAmount.AutoSize = false;
+            lblTotalAmount.TextAlign = ContentAlignment.MiddleLeft;
+
+            _cmbPayType.Dock = DockStyle.Fill;
+            _numDiscount.Dock = DockStyle.Fill;
+            _numReceived.Dock = DockStyle.Fill;
+            _lblChangeAmount.Dock = DockStyle.Fill;
+            _lblChangeAmount.TextAlign = ContentAlignment.MiddleLeft;
+            btnCheckout.Dock = DockStyle.Fill;
+            btnClearCart.Dock = DockStyle.Top;
+            btnClearCart.Height = 38;
+
+            rightLayout.Controls.Add(lblTotalAmount, 0, 0);
+            rightLayout.Controls.Add(new Label { Text = "支付方式", Dock = DockStyle.Fill, TextAlign = ContentAlignment.BottomLeft, ForeColor = AppTheme.TextPrimary }, 0, 1);
+            rightLayout.Controls.Add(_cmbPayType, 0, 2);
+            rightLayout.Controls.Add(new Label { Text = "手动折扣", Dock = DockStyle.Fill, TextAlign = ContentAlignment.BottomLeft, ForeColor = AppTheme.TextPrimary }, 0, 3);
+            rightLayout.Controls.Add(_numDiscount, 0, 4);
+            rightLayout.Controls.Add(new Label { Text = "实收金额", Dock = DockStyle.Fill, TextAlign = ContentAlignment.BottomLeft, ForeColor = AppTheme.TextPrimary }, 0, 5);
+            rightLayout.Controls.Add(_numReceived, 0, 6);
+            rightLayout.Controls.Add(_lblChangeAmount, 0, 7);
+            rightLayout.Controls.Add(btnCheckout, 0, 8);
+            rightLayout.Controls.Add(btnClearCart, 0, 9);
+            panelCashierRight.Controls.Add(rightLayout);
+        }
+
         private void ConfigureFormVisuals()
         {
-            Font = new Font("Microsoft YaHei UI", 9F, FontStyle.Regular);
-            lblInputTitle.Font = new Font("Microsoft YaHei UI", 11F, FontStyle.Bold);
-            lblTotalAmount.Font = new Font("Microsoft YaHei UI", 16F, FontStyle.Bold);
-            btnCheckout.BackColor = Color.FromArgb(27, 94, 32);
-            btnCheckout.ForeColor = Color.White;
-            btnCheckout.FlatStyle = FlatStyle.Flat;
-            btnCheckout.FlatAppearance.BorderSize = 0;
+            AppTheme.StyleForm(this);
+            panelMain.Padding = new Padding(12);
+            panelMain.BackColor = AppTheme.Surface;
+            tabMain.Appearance = TabAppearance.FlatButtons;
+            tabMain.ItemSize = new Size(0, 1);
+            tabMain.SizeMode = TabSizeMode.Fixed;
+
+            foreach (var panel in new Control[] { panelCashierLeft, panelCashierCenter, panelCashierRight, panelProductTop, panelOrderTop, panelStatsTop, panelOrderDetailContainer, panelOrderDetailTop })
+            {
+                AppTheme.StyleCard(panel);
+            }
+
+            lblInputTitle.Font = new Font("Microsoft YaHei UI", 12F, FontStyle.Bold);
+            lblInputTitle.ForeColor = AppTheme.TextPrimary;
+            lblTotalAmount.Font = new Font("Microsoft YaHei UI", 20F, FontStyle.Bold);
+            lblTotalAmount.ForeColor = AppTheme.AccentDark;
+            _lblChangeAmount.ForeColor = AppTheme.Success;
+
+            foreach (var grid in new[] { dgvCart, dgvProducts, dgvOrders, dgvOrderItems, dgvStatsOrders, _dgvStatsSummary })
+            {
+                AppTheme.StyleGrid(grid);
+            }
+
+            foreach (var input in EnumerateControls(this).Where(c => c is TextBox or ComboBox or NumericUpDown or DateTimePicker))
+            {
+                AppTheme.StyleInput(input);
+            }
+
+            foreach (var button in EnumerateControls(this).OfType<Button>())
+            {
+                var primary = button == btnCheckout || button == btnAddToCart || button == btnApplyStatsFilter || button == btnOrderApplyFilter || button == btnProductApplyInputFilter;
+                var danger = button == _btnVoidOrder;
+                AppTheme.StyleButton(button, primary, danger);
+            }
         }
 
         private void ConfigureProductTopLayout()
@@ -299,16 +444,14 @@ namespace Supermarket
 
             var row1 = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false, AutoScroll = true };
             _btnVoidOrder.Text = "\u4F5C\u5E9F\u9000\u5355";
-            _btnExportLogs.Text = "\u5BFC\u51FA\u6D41\u6C34CSV";
             SetWideButton(_btnVoidOrder);
-            SetWideButton(_btnExportLogs);
-            row1.Controls.AddRange(new Control[] { lblOrderSummary, lblOrderIncome, btnOrderToday, btnOrderYesterday, btnOrderMonth, btnOrderPrint, _btnVoidOrder, _btnExportLogs, btnOrderRefresh });
+            row1.Controls.AddRange(new Control[] { lblOrderSummary, lblOrderIncome, btnOrderToday, btnOrderYesterday, btnOrderMonth, btnOrderPrint, _btnVoidOrder, btnOrderRefresh });
 
             var row2 = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false, AutoScroll = true };
             row2.Controls.AddRange(new Control[] { lblOrderIdFilter, txtOrderIdFilter, lblOrderCashierIdFilter, txtOrderCashierIdFilter, lblOrderCashierNameFilter, txtOrderCashierNameFilter });
 
             var row3 = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false, AutoScroll = true };
-            _chkOrderSelectAll.Text = "全选";
+            _chkOrderSelectAll.Text = "全选订单";
             _chkOrderSelectAll.AutoSize = true;
             row3.Controls.AddRange(new Control[] { lblOrderTimeFrom, dtpOrderStart, lblOrderTimeTo, dtpOrderEnd, btnOrderApplyFilter, btnOrderClearFilter, _chkOrderSelectAll });
 
@@ -382,15 +525,29 @@ namespace Supermarket
         
         private void InitTransactionLogsTab()
         {
-            var dbDir = Path.Combine(AppContext.BaseDirectory, "db");
-            var dbPath = Path.Combine(dbDir, "supermarket.db");
-            
+            if (!IsAdmin)
+            {
+                return;
+            }
+
             _tabTransactionLogs = new TabPage("收银流水");
-            _transactionLogPanel = new TransactionLogPanel(dbPath);
+            _transactionLogPanel = new TransactionLogPanel(_dbPath);
             _transactionLogPanel.Dock = DockStyle.Fill;
+            _transactionLogPanel.OrderDetailRequested += orderId => NavigateToOrderManagement(orderId);
             _tabTransactionLogs.Controls.Add(_transactionLogPanel);
-            
+
             tabMain.Controls.Add(_tabTransactionLogs);
+
+            _btnNavTransactionLogs = new Button
+            {
+                Text = "收银流水",
+                Dock = DockStyle.Fill
+            };
+            _btnNavTransactionLogs.Click += (s, e) =>
+            {
+                ShowPage(_tabTransactionLogs);
+                RefreshTransactionLogsPage();
+            };
         }
         
         private void RefreshTransactionLogsPage()
@@ -432,16 +589,112 @@ namespace Supermarket
 
         private void SetupHiddenGeneratePage()
         {
-            var host = new Panel { Dock = DockStyle.Top, Height = 120, Padding = new Padding(8) };
-            var row = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false, AutoScroll = true };
+            _tabGenerate.Controls.Clear();
+            _tabGenerate.BackColor = AppTheme.Surface;
+
+            var card = new Panel
+            {
+                Dock = DockStyle.Top,
+                Height = 180,
+                Padding = new Padding(18),
+                Margin = new Padding(18),
+                BackColor = AppTheme.Card
+            };
+
+            var title = AppTheme.CreateSectionTitle("订单生成");
+            title.Dock = DockStyle.Top;
+
+            var description = new Label
+            {
+                Dock = DockStyle.Top,
+                Height = 28,
+                Text = "管理员可按金额和单量快速生成演示订单，关闭后仍可从左侧导航重新进入。",
+                ForeColor = AppTheme.TextSecondary
+            };
+
+            var row = new FlowLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                WrapContents = true,
+                AutoScroll = true,
+                Padding = new Padding(0, 10, 0, 0)
+            };
+
+            _btnCloseGenerate.Text = "关闭页面";
+            _btnCloseGenerate.Click += (s, e) => CloseGeneratePage();
+
             row.Controls.AddRange(new Control[]
             {
                 lblGenStart, dtpGenStart, lblGenEnd, dtpGenEnd, lblGenerateAmount, txtGenerateAmount,
-                lblGenerateCount, txtGenerateCount, btnGenerateOrders
+                lblGenerateCount, txtGenerateCount, btnGenerateOrders, _btnCloseGenerate
             });
-            host.Controls.Add(row);
-            _tabGenerate.Controls.Add(host);
-            _tabGenerate.BackColor = Color.White;
+
+            card.Controls.Add(row);
+            card.Controls.Add(description);
+            card.Controls.Add(title);
+            _tabGenerate.Controls.Add(card);
+        }
+
+        private void UnlockGeneratePage()
+        {
+            if (_generatePageUnlocked)
+            {
+                ShowGeneratePage();
+                return;
+            }
+
+            _generatePageUnlocked = true;
+            EnsureGenerateNavButton();
+            if (!tabMain.TabPages.Contains(_tabGenerate))
+            {
+                tabMain.TabPages.Add(_tabGenerate);
+            }
+            if (_btnNavGenerate != null)
+            {
+                _btnNavGenerate.Visible = true;
+            }
+            ConfigureNavLayout();
+            ApplyNavStyles();
+            ShowGeneratePage();
+        }
+
+        private void ShowGeneratePage()
+        {
+            if (!_generatePageUnlocked)
+            {
+                return;
+            }
+
+            if (!tabMain.TabPages.Contains(_tabGenerate))
+            {
+                tabMain.TabPages.Add(_tabGenerate);
+            }
+            if (_btnNavGenerate != null)
+            {
+                _btnNavGenerate.Visible = true;
+            }
+
+            ConfigureNavLayout();
+            ApplyNavStyles();
+            ShowPage(_tabGenerate);
+        }
+
+        private void CloseGeneratePage()
+        {
+            if (tabMain.TabPages.Contains(_tabGenerate))
+            {
+                tabMain.TabPages.Remove(_tabGenerate);
+            }
+            if (_btnNavGenerate != null)
+            {
+                _btnNavGenerate.Visible = false;
+            }
+            _generatePageUnlocked = false;
+            _titleClickCount = 0;
+
+            ConfigureNavLayout();
+            ApplyNavStyles();
+            ShowPage(tabCashier);
         }
 
         private void ShowPage(TabPage page)
@@ -453,62 +706,70 @@ namespace Supermarket
         private void ConfigureNavLayout()
         {
             panelNav.Controls.Clear();
-            panelNav.Width = 220;
-            panelNav.Padding = new Padding(12, 16, 12, 12);
-            panelNav.BackColor = Color.FromArgb(28, 34, 45);
+            panelNav.Width = 236;
+            panelNav.Padding = new Padding(16, 18, 16, 14);
+            panelNav.BackColor = Color.FromArgb(18, 31, 48);
 
             lblNavTitle.Dock = DockStyle.Top;
             lblNavTitle.AutoSize = false;
-            lblNavTitle.Text = "功能区";
             lblNavTitle.TextAlign = ContentAlignment.MiddleLeft;
-            lblNavTitle.Font = new Font("Microsoft YaHei UI", 13F, FontStyle.Bold);
-            lblNavTitle.ForeColor = Color.FromArgb(235, 242, 255);
-            lblNavTitle.Margin = new Padding(4, 0, 4, 14);
-            lblNavTitle.Height = 36;
+            lblNavTitle.Font = new Font("Microsoft YaHei UI", 14F, FontStyle.Bold);
+            lblNavTitle.ForeColor = Color.FromArgb(240, 246, 255);
+            lblNavTitle.Margin = new Padding(4, 0, 4, 2);
+            lblNavTitle.Height = 34;
+
+            _lblNavSubtitle.Dock = DockStyle.Top;
+            _lblNavSubtitle.AutoSize = false;
+            _lblNavSubtitle.TextAlign = ContentAlignment.MiddleLeft;
+            _lblNavSubtitle.Font = new Font("Microsoft YaHei UI", 9F, FontStyle.Regular);
+            _lblNavSubtitle.ForeColor = Color.FromArgb(169, 189, 213);
+            _lblNavSubtitle.Height = 26;
+            _lblNavSubtitle.Margin = new Padding(4, 0, 4, 14);
 
             _navButtonLayout.Dock = DockStyle.Top;
             _navButtonLayout.ColumnCount = 1;
-            _navButtonLayout.RowCount = 5;
-            _navButtonLayout.Height = 5 * 54;
+            var buttons = new List<Button>();
+            if (btnNavCashier.Visible) buttons.Add(btnNavCashier);
+            if (btnNavProducts.Visible) buttons.Add(btnNavProducts);
+            buttons.Add(btnNavOrders);
+            if (_btnNavGenerate?.Visible == true && _generatePageUnlocked) buttons.Add(_btnNavGenerate);
+            if (_btnNavTransactionLogs?.Visible == true) buttons.Add(_btnNavTransactionLogs);
+            if (btnNavStats.Visible) buttons.Add(btnNavStats);
+            if (_btnNavStaffManagement?.Visible == true) buttons.Add(_btnNavStaffManagement);
+
+            _navButtonLayout.RowCount = buttons.Count;
+            _navButtonLayout.Height = buttons.Count * 56;
             _navButtonLayout.Padding = new Padding(0);
             _navButtonLayout.Margin = new Padding(0);
             _navButtonLayout.BackColor = Color.Transparent;
             _navButtonLayout.ColumnStyles.Clear();
             _navButtonLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
             _navButtonLayout.RowStyles.Clear();
-            for (var i = 0; i < 5; i++)
+            for (var i = 0; i < buttons.Count; i++)
             {
-                _navButtonLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 54F));
+                _navButtonLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 56F));
             }
-
-            var buttons = new[] { btnNavCashier, btnNavProducts, btnNavOrders, _btnNavTransactionLogs, btnNavStats }
-                .Where(b => b != null)
-                .Cast<Button>()
-                .ToList();
 
             foreach (var btn in buttons)
             {
                 btn.Dock = DockStyle.Fill;
-                btn.Margin = new Padding(0, 0, 0, 8);
+                btn.Margin = new Padding(0, 0, 0, 10);
             }
 
             _navButtonLayout.Controls.Clear();
-            _navButtonLayout.Controls.Add(btnNavCashier, 0, 0);
-            _navButtonLayout.Controls.Add(btnNavProducts, 0, 1);
-            _navButtonLayout.Controls.Add(btnNavOrders, 0, 2);
-            if (_btnNavTransactionLogs != null)
+            for (var i = 0; i < buttons.Count; i++)
             {
-                _navButtonLayout.Controls.Add(_btnNavTransactionLogs, 0, 3);
+                _navButtonLayout.Controls.Add(buttons[i], 0, i);
             }
-            _navButtonLayout.Controls.Add(btnNavStats, 0, 4);
 
             panelNav.Controls.Add(_navButtonLayout);
+            panelNav.Controls.Add(_lblNavSubtitle);
             panelNav.Controls.Add(lblNavTitle);
         }
 
         private void ApplyNavStyles()
         {
-            var navTitles = new HashSet<string> { "收银台", "商品管理", "订单管理", "收银流水", "统计页面" };
+            var navTitles = new HashSet<string> { "收银台", "商品管理", "订单管理", "订单生成", "收银流水", "统计页面", "人员管理" };
             var navButtons = EnumerateControls(panelNav)
                 .OfType<Button>()
                 .Where(b => navTitles.Contains(b.Text))
@@ -516,15 +777,15 @@ namespace Supermarket
             
             foreach (var btn in navButtons)
             {
-                btn.ForeColor = Color.FromArgb(227, 235, 252);
-                btn.BackColor = Color.FromArgb(46, 56, 70);
+                btn.ForeColor = Color.FromArgb(229, 238, 248);
+                btn.BackColor = Color.FromArgb(33, 51, 73);
                 btn.FlatStyle = FlatStyle.Flat;
                 btn.FlatAppearance.BorderSize = 0;
-                btn.FlatAppearance.MouseOverBackColor = Color.FromArgb(64, 78, 96);
-                btn.TextAlign = ContentAlignment.MiddleCenter;
+                btn.FlatAppearance.MouseOverBackColor = Color.FromArgb(43, 69, 99);
+                btn.TextAlign = ContentAlignment.MiddleLeft;
                 btn.Font = new Font("Microsoft YaHei UI", 11F, FontStyle.Bold);
                 btn.Cursor = Cursors.Hand;
-                btn.Padding = new Padding(0);
+                btn.Padding = new Padding(18, 0, 0, 0);
             }
 
             UpdateNavActiveState(tabMain.SelectedTab ?? tabCashier);
@@ -532,17 +793,19 @@ namespace Supermarket
 
         private void UpdateNavActiveState(TabPage activePage)
         {
-            var activeColor = Color.FromArgb(21, 121, 219);
-            var normalColor = Color.FromArgb(46, 56, 70);
-            var normalText = Color.FromArgb(227, 235, 252);
+            var activeColor = Color.FromArgb(37, 111, 197);
+            var normalColor = Color.FromArgb(33, 51, 73);
+            var normalText = Color.FromArgb(229, 238, 248);
 
             var pairs = new List<(Button? Btn, TabPage Page)>
             {
                 (btnNavCashier, tabCashier),
                 (btnNavProducts, tabProducts),
                 (btnNavOrders, tabOrders),
+                (_btnNavGenerate, _tabGenerate),
                 (_btnNavTransactionLogs, _tabTransactionLogs),
-                (btnNavStats, tabStats)
+                (btnNavStats, tabStats),
+                (_btnNavStaffManagement, _tabStaffManagement)
             };
 
             foreach (var pair in pairs.Where(p => p.Btn != null))
@@ -562,6 +825,13 @@ namespace Supermarket
             txtProductId.SelectAll();
         }
 
+        private void txtProductNameSearch_KeyDown(object? sender, KeyEventArgs e)
+        {
+            if (e.KeyCode != Keys.Enter) return;
+            e.SuppressKeyPress = true;
+            AddSelectedMatchToCart();
+        }
+
         private void InitCashierSelector()
         {
             var cashiers = _cashierService.Cashiers.ToList();
@@ -574,54 +844,46 @@ namespace Supermarket
             cmbCashier.DisplayMember = nameof(Cashier.CashierName);
             cmbCashier.ValueMember = nameof(Cashier.CashierId);
             cmbCashier.DropDownWidth = 220;
-            cmbCashier.SelectedIndex = 0;
+            if (!string.IsNullOrWhiteSpace(_currentUser.CashierId) && cashiers.Any(c => c.CashierId == _currentUser.CashierId))
+            {
+                cmbCashier.SelectedValue = _currentUser.CashierId;
+            }
+            else
+            {
+                cmbCashier.SelectedIndex = 0;
+            }
         }
 
         private void InitCheckoutExtension()
         {
-            var lblPayType = new Label { Text = "\u652F\u4ED8\u65B9\u5F0F", Left = 12, Top = 210, Width = 200 };
-            _cmbPayType.Left = 12;
-            _cmbPayType.Top = 232;
-            _cmbPayType.Width = 200;
             _cmbPayType.DropDownStyle = ComboBoxStyle.DropDownList;
             _cmbPayType.Items.AddRange(new object[] { "现金", "扫码" });
             _cmbPayType.SelectedIndex = 0;
 
-            var lblDiscount = new Label { Text = "\u624B\u52A8\u6298\u6263", Left = 12, Top = 272, Width = 200 };
-            _numDiscount.Left = 12;
-            _numDiscount.Top = 294;
-            _numDiscount.Width = 200;
             _numDiscount.DecimalPlaces = 2;
             _numDiscount.Maximum = 999999;
             _numDiscount.ValueChanged += (s, e) => UpdateTotalAmount();
 
-            var lblReceived = new Label { Text = "\u5B9E\u6536\u91D1\u989D", Left = 12, Top = 334, Width = 200 };
-            _numReceived.Left = 12;
-            _numReceived.Top = 356;
-            _numReceived.Width = 200;
             _numReceived.DecimalPlaces = 2;
             _numReceived.Maximum = 999999;
             _numReceived.ValueChanged += (s, e) => UpdateTotalAmount();
 
             _lblChangeAmount.Text = "\u627E\u96F6\uFF1A0.00";
-            _lblChangeAmount.Left = 12;
-            _lblChangeAmount.Top = 396;
-            _lblChangeAmount.Width = 200;
-
-            panelCashierRight.Controls.AddRange(new Control[] { lblPayType, _cmbPayType, lblDiscount, _numDiscount, lblReceived, _numReceived, _lblChangeAmount });
         }
 
         private void InitCartGrid()
         {
             dgvCart.AutoGenerateColumns = false;
+            dgvCart.ReadOnly = false;
             dgvCart.DataSource = _cart;
             dgvCart.Columns.Clear();
             dgvCart.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "名称", Name = "colName", Width = 180 });
             dgvCart.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "供货商", Name = "colSupplier", Width = 120 });
             dgvCart.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "分类", Name = "colCategory", Width = 90 });
             dgvCart.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "单价", Name = "colPrice", Width = 80 });
-            dgvCart.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "数量", DataPropertyName = "Quantity", Name = "colQuantity" });
+            dgvCart.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "数量", DataPropertyName = "Quantity", Name = "colQuantity", Width = 70 });
             dgvCart.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "小计", Name = "colSubTotal", Width = 90 });
+            dgvCart.Columns.Add(new DataGridViewButtonColumn { HeaderText = "操作", Name = "colRemove", Text = "删除", UseColumnTextForButtonValue = true, Width = 72 });
 
             dgvCart.CellFormatting += (s, e) =>
             {
@@ -635,6 +897,37 @@ namespace Supermarket
                 else if (colName == "colPrice") e.Value = item.Product.Price.ToString("F2");
                 else if (colName == "colSubTotal") e.Value = item.SubTotal.ToString("F2");
             };
+            dgvCart.CellContentClick += dgvCart_CellContentClick;
+            dgvCart.CellEndEdit += dgvCart_CellEndEdit;
+        }
+
+        private void dgvCart_CellContentClick(object? sender, DataGridViewCellEventArgs e)
+        {
+            if (e.RowIndex < 0) return;
+            if (dgvCart.Columns[e.ColumnIndex].Name != "colRemove") return;
+            if (e.RowIndex >= _cart.Count) return;
+
+            _cart.RemoveAt(e.RowIndex);
+            dgvCart.Refresh();
+            UpdateTotalAmount();
+        }
+
+        private void dgvCart_CellEndEdit(object? sender, DataGridViewCellEventArgs e)
+        {
+            if (e.RowIndex < 0 || e.RowIndex >= _cart.Count) return;
+            if (dgvCart.Columns[e.ColumnIndex].Name != "colQuantity") return;
+
+            var cellValue = dgvCart.Rows[e.RowIndex].Cells[e.ColumnIndex].Value?.ToString();
+            if (!int.TryParse(cellValue, out var quantity) || quantity <= 0)
+            {
+                quantity = 1;
+            }
+
+            var item = _cart[e.RowIndex];
+            quantity = Math.Min(quantity, item.Product.StockCount);
+            item.Quantity = quantity;
+            dgvCart.Refresh();
+            UpdateTotalAmount();
         }
 
         private void InitProductGrid()
@@ -665,8 +958,16 @@ namespace Supermarket
             dgvOrders.AutoGenerateColumns = false;
             dgvOrders.ReadOnly = false;
             dgvOrders.EditMode = DataGridViewEditMode.EditOnEnter;
+            dgvOrders.DefaultCellStyle.SelectionBackColor = Color.FromArgb(255, 179, 0);
+            dgvOrders.DefaultCellStyle.SelectionForeColor = Color.FromArgb(28, 28, 28);
+            dgvOrders.RowsDefaultCellStyle.SelectionBackColor = Color.FromArgb(255, 179, 0);
+            dgvOrders.RowsDefaultCellStyle.SelectionForeColor = Color.FromArgb(28, 28, 28);
+            dgvOrders.AlternatingRowsDefaultCellStyle.SelectionBackColor = Color.FromArgb(255, 179, 0);
+            dgvOrders.AlternatingRowsDefaultCellStyle.SelectionForeColor = Color.FromArgb(28, 28, 28);
             dgvOrders.Columns.Clear();
-            dgvOrders.Columns.Add(new DataGridViewCheckBoxColumn { HeaderText = "选", Name = "colPick", Width = 40, ReadOnly = false, SortMode = DataGridViewColumnSortMode.NotSortable });
+            btnOrderPrint.Text = "打印所选订单";
+            btnOrderPrint.Enabled = false;
+            dgvOrders.Columns.Add(new DataGridViewCheckBoxColumn { HeaderText = "选择", Name = "colPick", Width = 56, ReadOnly = false, SortMode = DataGridViewColumnSortMode.NotSortable });
             dgvOrders.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "订单号", DataPropertyName = "OrderId", Width = 180, ReadOnly = true });
             dgvOrders.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "收银员ID", DataPropertyName = "CashierId", Width = 90, ReadOnly = true });
             dgvOrders.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "收银员", DataPropertyName = "CashierName", Width = 100, ReadOnly = true });
@@ -734,6 +1035,7 @@ namespace Supermarket
             var picked = Convert.ToBoolean(dgvOrders.Rows[e.RowIndex].Cells["colPick"].Value);
             if (picked) _checkedOrderIds.Add(order.OrderId);
             else _checkedOrderIds.Remove(order.OrderId);
+            UpdateOrderSelectionState();
         }
 
         private void chkOrderSelectAll_CheckedChanged(object? sender, EventArgs e)
@@ -747,6 +1049,7 @@ namespace Supermarket
                 else _checkedOrderIds.Remove(order.OrderId);
             }
             _isApplyingOrderChecks = false;
+            UpdateOrderSelectionState();
         }
 
         private void InitStatsGrid()
@@ -758,6 +1061,14 @@ namespace Supermarket
             dgvStatsOrders.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "时间", DataPropertyName = "CreatedAt", Width = 145 });
             dgvStatsOrders.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "时间戳", DataPropertyName = "CreatedTimestamp", Width = 120 });
             dgvStatsOrders.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "总金额", DataPropertyName = "TotalAmount", Width = 140 });
+            dgvStatsOrders.Columns.Add(new DataGridViewButtonColumn
+            {
+                Name = "colStatsOrderDetail",
+                HeaderText = "订单详情",
+                Text = "查看订单",
+                UseColumnTextForButtonValue = true,
+                Width = 110
+            });
 
             dgvStatsOrders.CellFormatting += (s, e) =>
             {
@@ -765,6 +1076,13 @@ namespace Supermarket
                 if (dgvStatsOrders.Columns[e.ColumnIndex].DataPropertyName != "CreatedAt") return;
                 if (dgvStatsOrders.Rows[e.RowIndex].DataBoundItem is not OrderRecord order) return;
                 e.Value = order.CreatedAt.ToString("MM-dd HH:mm");
+            };
+            dgvStatsOrders.CellContentClick += (s, e) =>
+            {
+                if (e.RowIndex < 0) return;
+                if (dgvStatsOrders.Columns[e.ColumnIndex].Name != "colStatsOrderDetail") return;
+                if (dgvStatsOrders.Rows[e.RowIndex].DataBoundItem is not OrderRecord order) return;
+                NavigateToOrderManagement(order.OrderId);
             };
         }
 
@@ -797,6 +1115,7 @@ namespace Supermarket
                     _inventoryService.Products.OrderBy(p => p.ID).ToList());
                 dgvProducts.DataSource = null;
                 dgvProducts.DataSource = products;
+                UpdateProductNameMatches();
             }
             catch (Exception ex)
             {
@@ -942,9 +1261,8 @@ namespace Supermarket
         {
             try
             {
-                var orders = await Task.Run(() => 
-                    _orderService.Orders.OrderByDescending(o => o.CreatedAt).ToList());
-                ApplyOrderView(orders, "全部订单");
+                var orders = await Task.Run(GetVisibleOrderList);
+                ApplyOrderView(orders, IsAdmin ? "全部订单" : "我的订单");
             }
             catch (Exception ex)
             {
@@ -964,6 +1282,7 @@ namespace Supermarket
                 row.Cells["colPick"].Value = _checkedOrderIds.Contains(order.OrderId);
             }
             _isApplyingOrderChecks = false;
+            UpdateOrderSelectionState();
 
             var total = _currentOrderView.Sum(x => x.TotalAmount);
             lblOrderSummary.Text = $"{title}：{_currentOrderView.Count} 单";
@@ -980,14 +1299,24 @@ namespace Supermarket
             }
         }
 
+        private void UpdateOrderSelectionState()
+        {
+            var selectedCount = dgvOrders.Rows
+                .Cast<DataGridViewRow>()
+                .Count(r => Convert.ToBoolean(r.Cells["colPick"].Value));
+
+            btnOrderPrint.Enabled = selectedCount > 0;
+            _chkOrderSelectAll.Text = selectedCount == 0 ? "全选订单" : $"已选 {selectedCount} 单";
+        }
+
         private void ApplyOrderQuickRange(DateTime start, DateTime end, string title)
         {
-            var orders = _orderService.Orders
+            var orders = VisibleOrders
                 .Where(o => o.CreatedAt >= start && o.CreatedAt <= end)
                 .OrderByDescending(o => o.CreatedAt)
                 .ToList();
 
-            ApplyOrderView(orders, title);
+            ApplyOrderView(orders, IsAdmin ? title : $"我的{title}");
         }
 
         private void ApplyOrderAdvancedFilter()
@@ -996,7 +1325,7 @@ namespace Supermarket
             var cashierId = txtOrderCashierIdFilter.Text.Trim();
             var cashierName = txtOrderCashierNameFilter.Text.Trim();
 
-            var query = _orderService.Orders.AsEnumerable();
+            var query = VisibleOrders.AsEnumerable();
             if (!string.IsNullOrWhiteSpace(orderId))
             {
                 var tokens = orderId.Split(new[] { ' ', ',', ';', '，', '；', '\t' }, StringSplitOptions.RemoveEmptyEntries);
@@ -1035,6 +1364,11 @@ namespace Supermarket
 
         private void RefreshStatsPage()
         {
+            if (!IsAdmin)
+            {
+                return;
+            }
+
             var todayRevenue = _orderService.Orders
                 .Where(o => o.CreatedAt.Date == DateTime.Today)
                 .Sum(o => o.TotalAmount);
@@ -1045,6 +1379,11 @@ namespace Supermarket
 
         private void ApplyStatsFilter()
         {
+            if (!IsAdmin)
+            {
+                return;
+            }
+
             var start = dtpStatStart.Value;
             var end = dtpStatEnd.Value;
 
@@ -1362,11 +1701,49 @@ namespace Supermarket
             dgvOrderItems.DataSource = order.Items.ToList();
         }
 
+        private void NavigateToOrderManagement(string orderId)
+        {
+            if (string.IsNullOrWhiteSpace(orderId))
+            {
+                return;
+            }
+
+            ApplyOrderView(GetVisibleOrderList(), IsAdmin ? "全部订单" : "我的订单");
+            ShowPage(tabOrders);
+
+            foreach (DataGridViewRow row in dgvOrders.Rows)
+            {
+                if (row.DataBoundItem is not OrderRecord order) continue;
+                if (!string.Equals(order.OrderId, orderId, StringComparison.OrdinalIgnoreCase)) continue;
+
+                dgvOrders.ClearSelection();
+                row.Selected = true;
+                row.Cells["colPick"].Value = true;
+                _checkedOrderIds.Add(order.OrderId);
+                UpdateOrderSelectionState();
+                dgvOrders.CurrentCell = row.Cells["colPick"];
+                if (row.Index >= 0)
+                {
+                    dgvOrders.FirstDisplayedScrollingRowIndex = row.Index;
+                }
+                RefreshOrderDetailForSelection();
+                return;
+            }
+
+            MessageBox.Show($"未找到订单 {orderId}。", "提示", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+
         private void btnVoidOrder_Click(object? sender, EventArgs e)
         {
             if (dgvOrders.CurrentRow?.DataBoundItem is not OrderRecord order)
             {
                 MessageBox.Show("\u8BF7\u5148\u9009\u62E9\u4E00\u6761\u8BA2\u5355\u3002", "\u63D0\u793A", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            if (!IsAdmin && !string.Equals(order.CashierId, _currentUser.CashierId, StringComparison.OrdinalIgnoreCase))
+            {
+                MessageBox.Show("你只能操作自己的订单。", "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
             }
 
@@ -1377,6 +1754,7 @@ namespace Supermarket
             if (_orderBLL.VoidOrder(order.OrderId, "手工作废", out var message))
             {
                 _inventoryService.Load();
+                _orderService.Load();
                 RefreshProductGrid();
                 RefreshOrderGrid();
                 RefreshStatsPage();
@@ -1386,20 +1764,6 @@ namespace Supermarket
             {
                 MessageBox.Show(message, "失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             }
-        }
-
-        private void btnExportLogs_Click(object? sender, EventArgs e)
-        {
-            using var dialog = new SaveFileDialog
-            {
-                Filter = "CSV files (*.csv)|*.csv",
-                FileName = $"transaction_logs_{DateTime.Now:yyyyMMdd_HHmmss}.csv"
-            };
-
-            if (dialog.ShowDialog(this) != DialogResult.OK) return;
-
-            _orderService.ExportLogsToCsv(dialog.FileName);
-            MessageBox.Show("\u6D41\u6C34\u5DF2\u5BFC\u51FA\u3002", "\u5B8C\u6210", MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
 
         private void btnOrderPrint_Click(object? sender, EventArgs e)
@@ -1414,22 +1778,7 @@ namespace Supermarket
 
             if (selectedOrders.Count == 0)
             {
-                selectedOrders = dgvOrders.SelectedRows
-                .Cast<DataGridViewRow>()
-                .Select(r => r.DataBoundItem as OrderRecord)
-                .Where(o => o != null)
-                .Cast<OrderRecord>()
-                .ToList();
-            }
-
-            if (selectedOrders.Count == 0 && dgvOrders.CurrentRow?.DataBoundItem is OrderRecord current)
-            {
-                selectedOrders.Add(current);
-            }
-
-            if (selectedOrders.Count == 0)
-            {
-                MessageBox.Show("请至少选择一条订单。", "提示", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                MessageBox.Show("请先勾选要打印的订单。", "提示", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return;
             }
 
@@ -1719,13 +2068,6 @@ namespace Supermarket
                     return;
                 }
 
-                int quantity = (int)numQuantity.Value;
-                if (quantity <= 0)
-                {
-                    ToastHelper.ShowToast(this, "数量必须大于0");
-                    return;
-                }
-
                 var product = _productBLL.GetProductById(productId);
                 if (product == null)
                 {
@@ -1733,30 +2075,88 @@ namespace Supermarket
                     return;
                 }
 
-                var existing = _cart.FirstOrDefault(x => x.Product.ID == productId);
-                int alreadyInCart = existing?.Quantity ?? 0;
-                if (product.StockCount < alreadyInCart + quantity)
-                {
-                    ToastHelper.ShowToast(this, $"库存不足，当前库存：{product.StockCount}");
-                    return;
-                }
-
-                if (existing == null)
-                {
-                    _cart.Add(new OrderItem { Product = product, Quantity = quantity });
-                }
-                else
-                {
-                    existing.Quantity += quantity;
-                    dgvCart.Refresh();
-                }
-
-                UpdateTotalAmount();
+                AddProductToCart(product);
             }
             catch (Exception ex)
             {
                 MessageBox.Show($"添加商品失败：{ex.Message}", "错误", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
+        }
+
+        private void btnAddByName_Click(object? sender, EventArgs e)
+        {
+            AddSelectedMatchToCart();
+        }
+
+        private void UpdateProductNameMatches()
+        {
+            var keyword = _txtProductNameSearch.Text.Trim();
+            var matches = _inventoryService.Products
+                .Where(p => p.StockCount > 0)
+                .Where(p => string.IsNullOrWhiteSpace(keyword) || p.Name.Contains(keyword, StringComparison.OrdinalIgnoreCase))
+                .OrderBy(p => p.Name)
+                .ThenBy(p => p.ID)
+                .Take(8)
+                .ToList();
+
+            _productNameMatches.Clear();
+            _productNameMatches.AddRange(matches);
+            _lstProductMatches.BeginUpdate();
+            _lstProductMatches.Items.Clear();
+            foreach (var product in matches)
+            {
+                _lstProductMatches.Items.Add($"{product.Name}  ￥{product.Price:F2}  库存:{product.StockCount}");
+            }
+            _lstProductMatches.EndUpdate();
+            if (_lstProductMatches.Items.Count > 0)
+            {
+                _lstProductMatches.SelectedIndex = 0;
+            }
+        }
+
+        private void AddSelectedMatchToCart()
+        {
+            if (_lstProductMatches.SelectedIndex < 0 || _lstProductMatches.SelectedIndex >= _productNameMatches.Count)
+            {
+                ToastHelper.ShowToast(this, "请先选择一个匹配商品");
+                return;
+            }
+
+            var selected = _productNameMatches[_lstProductMatches.SelectedIndex];
+            AddProductToCart(selected);
+            _txtProductNameSearch.Focus();
+            _txtProductNameSearch.SelectAll();
+        }
+
+        private void AddProductToCart(Product product)
+        {
+            int quantity = (int)numQuantity.Value;
+            if (quantity <= 0)
+            {
+                ToastHelper.ShowToast(this, "数量必须大于0");
+                return;
+            }
+
+            var current = _productBLL.GetProductById(product.ID) ?? product;
+            var existing = _cart.FirstOrDefault(x => x.Product.ID == current.ID);
+            int alreadyInCart = existing?.Quantity ?? 0;
+            if (current.StockCount < alreadyInCart + quantity)
+            {
+                ToastHelper.ShowToast(this, $"库存不足，当前库存：{current.StockCount}");
+                return;
+            }
+
+            if (existing == null)
+            {
+                _cart.Add(new OrderItem { Product = current, Quantity = quantity });
+            }
+            else
+            {
+                existing.Quantity += quantity;
+                dgvCart.Refresh();
+            }
+
+            UpdateTotalAmount();
         }
 
         private void btnClearCart_Click(object? sender, EventArgs e)
@@ -1851,8 +2251,15 @@ namespace Supermarket
                     return;
                 }
 
-                var cashier = cmbCashier.SelectedItem as Cashier ?? _cashierService.GetRandom(_random);
+                var cashier = IsAdmin
+                    ? cmbCashier.SelectedItem as Cashier ?? _cashierService.GetRandom(_random)
+                    : new Cashier
+                    {
+                        CashierId = _currentUser.CashierId,
+                        CashierName = _currentUser.CashierName
+                    };
                 var order = BuildOrderRecord(_cart.ToList(), cashier);
+                ApplyCashierContextToOrder(order);
                 
                 // 异步处理订单（使用事务）
                 string? errorMessage = null;
@@ -1940,9 +2347,9 @@ namespace Supermarket
             var raw = _cart.Sum(x => x.SubTotal);
             var discount = _numDiscount.Value;
             var actual = Math.Max(0, raw - discount);
-            lblTotalAmount.Text = $"总金额：{actual:C2}";
+            lblTotalAmount.Text = $"总金额：{actual:F2} 元";
             var change = Math.Max(0, _numReceived.Value - actual);
-            _lblChangeAmount.Text = $"找零：{change:F2}";
+            _lblChangeAmount.Text = $"找零：{change:F2} 元";
         }
 
         private void GenerateReceipt(OrderRecord order)
